@@ -1,11 +1,14 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../../lib/auth.ts';
-import { requireAuth } from '../../middleware/auth.ts';
+import { requireAuth, requireRole } from '../../middleware/auth.ts';
 import { USER_ROLES, type UserDocument, type UserRole } from '../../models/user.ts';
-import { countUsers, listUsers } from './user.service.ts';
+import { countUsers, createUser, listUsers, UserError } from './user.service.ts';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+
+/** Deliberately loose: the real check is whether mail to it bounces. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** passwordHash is select:false, but shape the response explicitly anyway. */
 function toPublicUser(user: UserDocument) {
@@ -67,4 +70,79 @@ userController.get('/', async (c) => {
     limit: Math.min(limit, MAX_LIMIT),
     skip,
   });
+});
+
+interface CreateUserBody {
+  email: string;
+  password: string;
+  role?: UserRole;
+  isActive?: boolean;
+}
+
+type ParsedBody = { ok: true; value: CreateUserBody } | { ok: false; error: string };
+
+function parseCreateUserBody(raw: unknown): ParsedBody {
+  if (typeof raw !== 'object' || raw === null) {
+    return { ok: false, error: 'Body must be a JSON object' };
+  }
+
+  const { email, password, role, isActive } = raw as Record<string, unknown>;
+
+  if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
+    return { ok: false, error: 'A valid email is required' };
+  }
+  if (typeof password !== 'string' || password === '') {
+    return { ok: false, error: 'password is required' };
+  }
+  if (role !== undefined && !USER_ROLES.includes(role as UserRole)) {
+    return { ok: false, error: `role must be one of: ${USER_ROLES.join(', ')}` };
+  }
+  if (isActive !== undefined && typeof isActive !== 'boolean') {
+    return { ok: false, error: 'isActive must be a boolean' };
+  }
+
+  return {
+    ok: true,
+    value: {
+      email: email.trim(),
+      password,
+      ...(role !== undefined ? { role: role as UserRole } : {}),
+      ...(isActive !== undefined ? { isActive } : {}),
+    },
+  };
+}
+
+/**
+ * POST /api/users  (admin only)
+ * Body: { email, password, role?, isActive? }
+ * Password rules are enforced by the service, not here.
+ */
+userController.post('/', requireRole('admin'), async (c) => {
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return c.json({ error: 'Body must be valid JSON' }, 400);
+  }
+
+  const parsed = parseCreateUserBody(raw);
+  if (!parsed.ok) {
+    return c.json({ error: parsed.error }, 400);
+  }
+
+  try {
+    const user = await createUser(parsed.value);
+    c.header('Location', `/api/users/${user.id}`);
+    return c.json({ user: toPublicUser(user) }, 201);
+  } catch (error) {
+    if (error instanceof UserError) {
+      if (error.code === 'EMAIL_IN_USE') {
+        return c.json({ error: error.message }, 409);
+      }
+      if (error.code === 'WEAK_PASSWORD') {
+        return c.json({ error: error.message, details: error.details }, 400);
+      }
+    }
+    throw error;
+  }
 });
