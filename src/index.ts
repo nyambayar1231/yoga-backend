@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
 import { logger } from 'hono/logger';
 import { authController } from './features/auth/auth.controller.ts';
+import { memberController } from './features/member/member.controller.ts';
 import { userController } from './features/user/user.controller.ts';
 import { connectDB } from './lib/db.ts';
 import type { AppEnv } from './lib/auth.ts';
@@ -21,6 +22,7 @@ app.get('/health', (c) => c.json({ status: 'healthy', uptime: process.uptime() }
 
 app.route('/api/auth', authController);
 app.route('/api/users', userController);
+app.route('/api/members', memberController);
 
 // Example of a protected, admin-only route.
 app.get('/api/admin/ping', requireAuth, requireRole('admin'), (c) =>

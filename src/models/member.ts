@@ -1,4 +1,4 @@
-import { Schema, model, type Model, type HydratedDocument } from 'mongoose';
+import { Schema, model, type Model, type HydratedDocument, type QueryFilter } from 'mongoose';
 
 /** Raw shape of a member document. */
 export interface IMember {
@@ -43,6 +43,15 @@ function escapeRegex(term: string): string {
 }
 
 /**
+ * Case-insensitive partial match on either name. Shared so the paginated list
+ * query and `searchByName` cannot drift apart.
+ */
+export function nameSearchFilter(term: string): QueryFilter<IMember> {
+  const pattern = new RegExp(escapeRegex(term.trim()), 'i');
+  return { $or: [{ firstName: pattern }, { lastName: pattern }] };
+}
+
+/**
  * Schema class loaded onto `memberSchema` via `loadClass`.
  * Getters become virtuals, methods become instance methods, statics become model statics.
  */
@@ -72,10 +81,7 @@ export class MemberSchemaClass {
 
   /** Case-insensitive partial match on either name. */
   static searchByName(this: IMemberModel, term: string): Promise<MemberDocument[]> {
-    const pattern = new RegExp(escapeRegex(term.trim()), 'i');
-    return this.find({ $or: [{ firstName: pattern }, { lastName: pattern }] })
-      .sort({ lastName: 1, firstName: 1 })
-      .exec();
+    return this.find(nameSearchFilter(term)).sort({ lastName: 1, firstName: 1 }).exec();
   }
 }
 
