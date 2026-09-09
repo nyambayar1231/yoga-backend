@@ -1,106 +1,90 @@
-import { Member, nameSearchFilter, type MemberDocument } from '../../models/member.ts';
-import { isValidObjectId, type QueryFilter } from 'mongoose';
-import type { IMember } from '../../models/member.ts';
+import type { QueryFilter } from 'mongoose';
+import { escapeRegex, type Pagination } from '../../lib/http.ts';
+import { notFound } from '../../lib/errors.ts';
+import { Member, type IMember, type MemberDocument } from '../../models/member.ts';
 import type { UserDocument } from '../../models/user.ts';
-import { assertUserCreatable, createUser } from '../user/user.service.ts';
+import { createWithAccount } from '../user/user.service.ts';
 
-export type MemberErrorCode = 'MEMBER_NOT_FOUND';
+export type MemberProfileInput = Omit<IMember, 'createdAt' | 'updatedAt' | 'isActive' | 'joinedAt'> &
+  Partial<Pick<IMember, 'joinedAt'>>;
 
-export class MemberError extends Error {
-  readonly code: MemberErrorCode;
+export type UpdateMemberInput = Partial<Omit<IMember, 'createdAt' | 'updatedAt'>>;
 
-  constructor(code: MemberErrorCode, message: string) {
-    super(message);
-    this.name = 'MemberError';
-    this.code = code;
-  }
-}
-
-export interface CreateMemberInput {
-  firstName: string;
-  lastName: string;
-  email: string;
+export interface CreateMemberInput extends MemberProfileInput {
+  /** The login email. Also stored on the profile when none is given separately. */
+  accountEmail: string;
   /** Null or omitted: the account exists but cannot log in until a password is set. */
   password?: string | null;
 }
 
-export interface RegisteredMember {
-  member: MemberDocument;
-  user: UserDocument;
-}
-
-export interface ListMembersOptions {
+export interface ListMembersFilter {
   search?: string;
-  limit?: number;
-  skip?: number;
+  isActive?: boolean;
 }
 
 /**
- * Registers a member and the 'member' account that points at it.
+ * Registers a member and the 'member' login that points at it.
  *
- * Two collections, and a standalone mongod has no transactions, so this checks
- * everything it can up front and compensates with a delete if the account
- * still fails. A member is never left without its account.
- *
- * Two people can genuinely share a name, so duplicate names are allowed
- * through rather than refusing to register a real person.
+ * Duplicate names are allowed through: two people genuinely share a name, and
+ * refusing to register a real person is the worse failure.
  */
-export async function createMember(input: CreateMemberInput): Promise<RegisteredMember> {
-  const account = {
-    email: input.email,
-    password: input.password ?? null,
-    role: 'member' as const,
-  };
+export async function createMember(
+  input: CreateMemberInput,
+): Promise<{ profile: MemberDocument; user: UserDocument }> {
+  const { accountEmail, password, ...profile } = input;
 
-  // Fails on a weak password or a taken email before anything is written.
-  await assertUserCreatable(account);
+  return createWithAccount({ email: accountEmail, password }, 'member', () =>
+    Member.create({ ...profile, email: profile.email ?? accountEmail }),
+  );
+}
 
-  const member = await Member.create({
-    firstName: input.firstName,
-    lastName: input.lastName,
-  });
+function buildFilter({ search, isActive }: ListMembersFilter): QueryFilter<IMember> {
+  const filter: QueryFilter<IMember> = {};
+  if (isActive !== undefined) filter.isActive = isActive;
 
-  try {
-    const user = await createUser({ ...account, memberId: member.id });
-    return { member, user };
-  } catch (error) {
-    // Lost a race on the email, or the account write failed: undo the member.
-    try {
-      await Member.deleteOne({ _id: member._id }).exec();
-    } catch (rollbackError) {
-      console.error(`Failed to roll back member ${member.id}:`, rollbackError);
-    }
-    throw error;
+  if (search !== undefined) {
+    const pattern = new RegExp(escapeRegex(search), 'i');
+    filter.$or = [{ firstName: pattern }, { lastName: pattern }, { email: pattern }];
   }
+  return filter;
 }
 
-function buildFilter(search: string | undefined): QueryFilter<IMember> {
-  return search !== undefined && search.trim() !== '' ? nameSearchFilter(search) : {};
-}
-
-export function listMembers(options: ListMembersOptions = {}): Promise<MemberDocument[]> {
-  const { search, limit = 50, skip = 0 } = options;
-
-  return Member.find(buildFilter(search))
+export function listMembers(
+  filter: ListMembersFilter,
+  { limit, skip }: Pagination,
+): Promise<MemberDocument[]> {
+  return Member.find(buildFilter(filter))
     .sort({ lastName: 1, firstName: 1 })
     .skip(skip)
     .limit(limit)
     .exec();
 }
 
-export function countMembers(options: Pick<ListMembersOptions, 'search'> = {}): Promise<number> {
-  return Member.countDocuments(buildFilter(options.search)).exec();
-}
-
-export async function getMemberById(id: string): Promise<MemberDocument | null> {
-  if (!isValidObjectId(id)) return null;
-  return Member.findById(id).exec();
+export function countMembers(filter: ListMembersFilter): Promise<number> {
+  return Member.countDocuments(buildFilter(filter)).exec();
 }
 
 export async function requireMemberById(id: string): Promise<MemberDocument> {
-  const member = await getMemberById(id);
-  if (!member) {
-    throw new MemberError('MEMBER_NOT_FOUND', `No member with id ${id}`);
-  }
+  const member = await Member.findById(id).exec();
+  if (!member) throw notFound('MEMBER_NOT_FOUND', `No member with id ${id}`);
   return member;
+}
+
+export async function updateMember(
+  id: string,
+  patch: UpdateMemberInput,
+): Promise<MemberDocument> {
+  const member = await requireMemberById(id);
+  member.set(patch);
+  return member.save();
+}
+
+/**
+ * Members are deactivated, never deleted: their attendance and assessments stay
+ * meaningful and must keep pointing at a real profile.
+ */
+export async function setMemberActive(id: string, isActive: boolean): Promise<MemberDocument> {
+  const member = await requireMemberById(id);
+  member.isActive = isActive;
+  return member.save();
 }

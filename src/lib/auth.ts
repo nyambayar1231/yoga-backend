@@ -11,11 +11,17 @@ const JWT_ALG = 'HS256';
 /** One week by default. Keep it short-ish: a JWT cannot be revoked before it expires. */
 export const TOKEN_TTL_SECONDS = Number(process.env.JWT_TTL_SECONDS ?? 60 * 60 * 24 * 7);
 
-/** The trusted identity we put on the request context. */
+/**
+ * The trusted identity on the request context. The profile ids travel in the
+ * token so ownership checks ("is this my data?") never need a database round
+ * trip, and never trust a memberId sent by the client.
+ */
 export interface AuthUser {
   id: string;
   email: string;
   role: UserRole;
+  memberId?: string;
+  instructorId?: string;
 }
 
 /** Hono generics so `c.get('user')` is typed everywhere. */
@@ -40,6 +46,8 @@ export function issueToken(user: AuthUser): Promise<string> {
       sub: user.id,
       email: user.email,
       role: user.role,
+      ...(user.memberId !== undefined ? { memberId: user.memberId } : {}),
+      ...(user.instructorId !== undefined ? { instructorId: user.instructorId } : {}),
       iat: now,
       exp: now + TOKEN_TTL_SECONDS,
     },
@@ -59,6 +67,8 @@ export async function readToken(token: string): Promise<AuthUser | null> {
       id: payload.sub,
       email: payload.email,
       role: payload.role as UserRole,
+      ...(typeof payload.memberId === 'string' ? { memberId: payload.memberId } : {}),
+      ...(typeof payload.instructorId === 'string' ? { instructorId: payload.instructorId } : {}),
     };
   } catch {
     return null;

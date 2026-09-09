@@ -1,91 +1,66 @@
-import { Schema, model, type Model, type HydratedDocument, type QueryFilter } from 'mongoose';
+import { Schema, model, type HydratedDocument, type Model } from 'mongoose';
+import { schemaOptions } from './base.ts';
 
-/** Raw shape of a member document. */
+export const GENDERS = ['male', 'female', 'other'] as const;
+export type Gender = (typeof GENDERS)[number];
+
+export interface IEmergencyContact {
+  name: string;
+  phone: string;
+}
+
+/** The member's profile. Attendance and assessments live in their own collections. */
 export interface IMember {
   firstName: string;
   lastName: string;
+  dateOfBirth?: Date;
+  gender?: Gender;
+  phone?: string;
+  email?: string;
+  emergencyContact?: IEmergencyContact;
+  joinedAt: Date;
+  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
 interface IMemberVirtuals {
   fullName: string;
-  initials: string;
 }
 
-export interface IMemberModel extends Model<IMember, {}, {}, IMemberVirtuals> {
-  findByFullName(firstName: string, lastName: string): Promise<MemberDocument | null>;
-  searchByName(term: string): Promise<MemberDocument[]>;
-}
+type MemberModel = Model<IMember, {}, {}, IMemberVirtuals>;
 
 export type MemberDocument = HydratedDocument<IMember, IMemberVirtuals>;
 
-const memberSchema = new Schema<IMember, IMemberModel, {}, {}, IMemberVirtuals>(
+const memberSchema = new Schema<IMember, MemberModel, {}, {}, IMemberVirtuals>(
   {
     firstName: { type: String, required: true, trim: true, maxlength: 100 },
     lastName: { type: String, required: true, trim: true, maxlength: 100 },
-  },
-  {
-    timestamps: true,
-    toJSON: {
-      virtuals: true,
-      transform(_doc, ret: Record<string, unknown>) {
-        delete ret.__v;
-        return ret;
-      },
+    dateOfBirth: { type: Date },
+    gender: { type: String, enum: GENDERS },
+    phone: { type: String, trim: true, maxlength: 30 },
+    email: { type: String, trim: true, lowercase: true, maxlength: 200 },
+    emergencyContact: {
+      type: new Schema<IEmergencyContact>(
+        {
+          name: { type: String, required: true, trim: true, maxlength: 100 },
+          phone: { type: String, required: true, trim: true, maxlength: 30 },
+        },
+        { _id: false },
+      ),
     },
+    joinedAt: { type: Date, default: () => new Date() },
+    isActive: { type: Boolean, default: true },
   },
+  schemaOptions(),
 );
 
-/** Keeps a user-supplied term from being read as a regular expression. */
-function escapeRegex(term: string): string {
-  return term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+memberSchema.virtual('fullName').get(function (this: IMember) {
+  return `${this.firstName} ${this.lastName}`;
+});
 
-/**
- * Case-insensitive partial match on either name. Shared so the paginated list
- * query and `searchByName` cannot drift apart.
- */
-export function nameSearchFilter(term: string): QueryFilter<IMember> {
-  const pattern = new RegExp(escapeRegex(term.trim()), 'i');
-  return { $or: [{ firstName: pattern }, { lastName: pattern }] };
-}
+memberSchema.index({ lastName: 1, firstName: 1 });
+// Not unique: the studio does not guarantee one email per member.
+memberSchema.index({ email: 1 }, { sparse: true });
 
-/**
- * Schema class loaded onto `memberSchema` via `loadClass`.
- * Getters become virtuals, methods become instance methods, statics become model statics.
- */
-export class MemberSchemaClass {
-  // Declared for `this` typing inside the class; erased at runtime.
-  declare firstName: string;
-  declare lastName: string;
-
-  get fullName(): string {
-    return `${this.firstName} ${this.lastName}`.trim();
-  }
-
-  get initials(): string {
-    return `${this.firstName[0] ?? ''}${this.lastName[0] ?? ''}`.toUpperCase();
-  }
-
-  static findByFullName(
-    this: IMemberModel,
-    firstName: string,
-    lastName: string,
-  ): Promise<MemberDocument | null> {
-    return this.findOne({
-      firstName: new RegExp(`^${escapeRegex(firstName.trim())}$`, 'i'),
-      lastName: new RegExp(`^${escapeRegex(lastName.trim())}$`, 'i'),
-    }).exec();
-  }
-
-  /** Case-insensitive partial match on either name. */
-  static searchByName(this: IMemberModel, term: string): Promise<MemberDocument[]> {
-    return this.find(nameSearchFilter(term)).sort({ lastName: 1, firstName: 1 }).exec();
-  }
-}
-
-memberSchema.loadClass(MemberSchemaClass);
-
-export const Member = model<IMember, IMemberModel>('Member', memberSchema);
-export { memberSchema };
+export const Member = model<IMember, MemberModel>('Member', memberSchema);

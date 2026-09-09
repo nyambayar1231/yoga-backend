@@ -1,135 +1,159 @@
 import { isValidObjectId } from 'mongoose';
-import { Member } from '../../models/member.ts';
-import { User, type IUser, type UserDocument, type UserRole } from '../../models/user.ts';
+import { badRequest, conflict, notFound, unauthorized, AppError } from '../../lib/errors.ts';
 import {
   checkPasswordStrength,
   hashPassword,
   needsRehash,
   verifyPassword,
 } from '../../lib/password.ts';
-
-export type UserErrorCode =
-  | 'EMAIL_IN_USE'
-  | 'WEAK_PASSWORD'
-  | 'USER_NOT_FOUND'
-  | 'INVALID_CREDENTIALS'
-  | 'USER_INACTIVE'
-  | 'MEMBER_ID_REQUIRED'
-  | 'MEMBER_ID_NOT_ALLOWED'
-  | 'MEMBER_NOT_FOUND'
-  | 'MEMBER_ALREADY_LINKED'
-  | 'PASSWORD_NOT_SET';
-
-export class UserError extends Error {
-  readonly code: UserErrorCode;
-  readonly details: string[];
-
-  constructor(code: UserErrorCode, message: string, details: string[] = []) {
-    super(message);
-    this.name = 'UserError';
-    this.code = code;
-    this.details = details;
-  }
-}
-
-export interface CreateUserInput {
-  email: string;
-  /** Null or omitted creates an account that cannot log in until a password is set. */
-  password?: string | null;
-  role?: UserRole;
-  isActive?: boolean;
-  /** Required when role is 'member': the already-registered member to link. */
-  memberId?: string;
-}
-
-export interface ListUsersOptions {
-  role?: UserRole;
-  isActive?: boolean;
-  limit?: number;
-  skip?: number;
-}
+import type { Pagination } from '../../lib/http.ts';
+import { Instructor } from '../../models/instructor.ts';
+import { Member } from '../../models/member.ts';
+import { User, type IUser, type UserDocument, type UserRole } from '../../models/user.ts';
 
 const DUPLICATE_KEY = 11000;
 
-/**
- * A member login always points at a member record the admin registered first;
- * every other role must not carry a memberId at all.
- */
-async function assertMemberLink(role: UserRole, memberId: string | undefined): Promise<void> {
-  if (role !== 'member') {
-    if (memberId !== undefined) {
-      throw new UserError(
-        'MEMBER_ID_NOT_ALLOWED',
-        `memberId is only valid for role 'member', not '${role}'`,
-      );
-    }
-    return;
-  }
-
-  if (memberId === undefined) {
-    throw new UserError(
-      'MEMBER_ID_REQUIRED',
-      "role 'member' requires a memberId - register the member first",
-    );
-  }
-  if (!isValidObjectId(memberId)) {
-    throw new UserError('MEMBER_NOT_FOUND', `memberId ${memberId} is not a valid id`);
-  }
-  if (!(await Member.exists({ _id: memberId }))) {
-    throw new UserError('MEMBER_NOT_FOUND', `No member registered with id ${memberId}`);
-  }
+export interface ProfileLink {
+  memberId?: string;
+  instructorId?: string;
 }
+
+export interface CreateUserInput extends ProfileLink {
+  email: string;
+  /** Null or omitted creates an account that cannot log in until a password is set. */
+  password?: string | null;
+  role: UserRole;
+  isActive?: boolean;
+}
+
+export interface ListUsersFilter {
+  role?: UserRole;
+  isActive?: boolean;
+}
+
+/** The profile field `createWithAccount` fills in for each role it supports. */
+const PROFILE_FIELD = {
+  member: 'memberId',
+  instructor: 'instructorId',
+} as const satisfies Record<'member' | 'instructor', keyof ProfileLink>;
 
 function assertStrongPassword(password: string): void {
   const { valid, errors } = checkPasswordStrength(password);
   if (!valid) {
-    throw new UserError('WEAK_PASSWORD', `Password ${errors.join(', ')}`, errors);
+    throw badRequest('WEAK_PASSWORD', `Password ${errors.join(', ')}`, errors);
+  }
+}
+
+async function assertProfileExists(
+  field: keyof ProfileLink,
+  id: string | undefined,
+): Promise<void> {
+  if (id === undefined) return;
+
+  const exists =
+    isValidObjectId(id) &&
+    (field === 'memberId'
+      ? await Member.exists({ _id: id })
+      : await Instructor.exists({ _id: id }));
+
+  if (!exists) {
+    throw notFound('PROFILE_NOT_FOUND', `No profile with ${field} ${id}`);
   }
 }
 
 /**
- * Pre-flight for callers that must create another document first: checks the
- * password and whether the email is free, so they can bail out before there is
- * anything to roll back. The member link is deliberately not checked here -
- * the member usually does not exist yet - `createUser` still validates it.
+ * A login points at the profile its role implies, and never at one it has no
+ * use for. The one asymmetry is deliberate: an admin may also hold an
+ * instructor profile, because an admin is allowed to do instructor-level work
+ * and teaching a session or authoring an assessment has to name an instructor.
  */
-export async function assertUserCreatable(input: {
+async function assertProfileLink(role: UserRole, link: ProfileLink): Promise<void> {
+  if (link.memberId !== undefined && role !== 'member') {
+    throw badRequest('PROFILE_LINK_INVALID', `memberId is not valid for role '${role}'`);
+  }
+  if (link.instructorId !== undefined && role === 'member') {
+    throw badRequest('PROFILE_LINK_INVALID', "instructorId is not valid for role 'member'");
+  }
+
+  if (role === 'member' && link.memberId === undefined) {
+    throw badRequest('PROFILE_REQUIRED', "Role 'member' requires memberId - create the profile first");
+  }
+  if (role === 'instructor' && link.instructorId === undefined) {
+    throw badRequest(
+      'PROFILE_REQUIRED',
+      "Role 'instructor' requires instructorId - create the profile first",
+    );
+  }
+
+  await assertProfileExists('memberId', link.memberId);
+  await assertProfileExists('instructorId', link.instructorId);
+}
+
+/**
+ * Pre-flight for callers that create a profile document first: checks the
+ * password and that the email is free, so they can bail out before there is
+ * anything to roll back.
+ */
+export async function assertAccountCreatable(account: {
   email: string;
   password?: string | null;
 }): Promise<void> {
-  if (input.password !== undefined && input.password !== null) {
-    assertStrongPassword(input.password);
-  }
+  if (account.password != null) assertStrongPassword(account.password);
 
-  if (await User.exists({ email: input.email.toLowerCase().trim() })) {
-    throw new UserError('EMAIL_IN_USE', `Email ${input.email} is already registered`);
+  if (await User.exists({ email: account.email.toLowerCase().trim() })) {
+    throw conflict('EMAIL_IN_USE', `Email ${account.email} is already registered`);
   }
 }
 
 export async function createUser(input: CreateUserInput): Promise<UserDocument> {
-  if (input.password !== undefined && input.password !== null) {
-    assertStrongPassword(input.password);
-  }
-
-  // 'instructor' mirrors the schema default, which applies when role is omitted.
-  await assertMemberLink(input.role ?? 'instructor', input.memberId);
-
-  const passwordHash =
-    input.password !== undefined && input.password !== null
-      ? await hashPassword(input.password)
-      : undefined;
+  if (input.password != null) assertStrongPassword(input.password);
+  await assertProfileLink(input.role, input);
 
   try {
     return await User.create({
       email: input.email,
-      ...(passwordHash !== undefined ? { passwordHash } : {}),
-      // role / isActive fall back to the schema defaults when omitted
-      ...(input.role !== undefined ? { role: input.role } : {}),
+      role: input.role,
+      ...(input.password != null ? { passwordHash: await hashPassword(input.password) } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
       ...(input.memberId !== undefined ? { memberId: input.memberId } : {}),
+      ...(input.instructorId !== undefined ? { instructorId: input.instructorId } : {}),
     });
   } catch (error) {
     throw translateDuplicateKey(error, input.email) ?? error;
+  }
+}
+
+/**
+ * Creates a profile and the login that points at it.
+ *
+ * Two collections and no transaction: a standalone mongod does not support them
+ * and this has to run in local development too. So everything that can be
+ * checked is checked up front, and a failed account write deletes the profile
+ * again. A profile is never left behind without its login.
+ */
+export async function createWithAccount<T extends { id: string; deleteOne: () => unknown }>(
+  account: { email: string; password?: string | null },
+  role: keyof typeof PROFILE_FIELD,
+  createProfile: () => Promise<T>,
+): Promise<{ profile: T; user: UserDocument }> {
+  await assertAccountCreatable(account);
+
+  const profile = await createProfile();
+  try {
+    const user = await createUser({
+      ...account,
+      role,
+      [PROFILE_FIELD[role]]: profile.id,
+    });
+    return { profile, user };
+  } catch (error) {
+    // Lost a race on the email, or the account write failed: undo the profile.
+    try {
+      await profile.deleteOne();
+    } catch (rollbackError) {
+      console.error(`Failed to roll back ${role} ${profile.id}:`, rollbackError);
+    }
+    throw error;
   }
 }
 
@@ -137,60 +161,46 @@ export function getUserById(id: string): Promise<UserDocument | null> {
   return User.findById(id).exec();
 }
 
-export function getUserByEmail(email: string): Promise<UserDocument | null> {
-  return User.findByEmail(email);
-}
-
 export async function requireUserById(id: string): Promise<UserDocument> {
   const user = await getUserById(id);
-  if (!user) {
-    throw new UserError('USER_NOT_FOUND', `No user with id ${id}`);
-  }
+  if (!user) throw notFound('USER_NOT_FOUND', `No user with id ${id}`);
   return user;
 }
 
-export function listUsers(options: ListUsersOptions = {}): Promise<UserDocument[]> {
-  const { role, isActive, limit = 50, skip = 0 } = options;
-
-  const filter: Record<string, unknown> = {};
-  if (role !== undefined) filter.role = role;
-  if (isActive !== undefined) filter.isActive = isActive;
-
+export function listUsers(
+  filter: ListUsersFilter,
+  { limit, skip }: Pagination,
+): Promise<UserDocument[]> {
   return User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).exec();
 }
 
-export function countUsers(options: Pick<ListUsersOptions, 'role' | 'isActive'> = {}): Promise<number> {
-  const filter: Record<string, unknown> = {};
-  if (options.role !== undefined) filter.role = options.role;
-  if (options.isActive !== undefined) filter.isActive = options.isActive;
-
+export function countUsers(filter: ListUsersFilter): Promise<number> {
   return User.countDocuments(filter).exec();
 }
 
-export type UpdateUserInput = Partial<Pick<IUser, 'email' | 'role' | 'isActive'>> & {
-  memberId?: string;
-};
+export type UpdateUserInput = Partial<Pick<IUser, 'email' | 'role' | 'isActive'>> & ProfileLink;
 
 export async function updateUser(id: string, input: UpdateUserInput): Promise<UserDocument> {
   const user = await requireUserById(id);
-
-  const nextRole = input.role ?? user.role;
-
-  if (input.role !== undefined || input.memberId !== undefined) {
-    // Staying a member keeps the existing link when none is supplied. Moving off
-    // the role ignores it, since it is about to be cleared anyway - only an
-    // explicitly passed memberId is an error there.
-    const effectiveMemberId =
-      nextRole === 'member' ? input.memberId ?? user.memberId?.toString() : input.memberId;
-
-    await assertMemberLink(nextRole, effectiveMemberId);
-  }
+  const touchesLinks =
+    input.role !== undefined || input.memberId !== undefined || input.instructorId !== undefined;
 
   user.set(input);
 
-  // Moving off the member role drops a link that no longer means anything.
-  if (nextRole !== 'member') {
-    user.set('memberId', undefined);
+  // Drop the link the new role no longer has any use for. An admin keeps the
+  // instructor profile they teach under, so promoting an instructor - or
+  // demoting an admin who teaches - leaves their classes and assessments
+  // pointing at the same person. Only a member has no use for one.
+  if (user.role !== 'member') user.set('memberId', undefined);
+  if (user.role === 'member') user.set('instructorId', undefined);
+
+  // Validate what the document will actually look like, rather than trying to
+  // predict it: whatever survived the clearing above is the real link.
+  if (touchesLinks) {
+    await assertProfileLink(user.role, {
+      memberId: user.memberId?.toString(),
+      instructorId: user.instructorId?.toString(),
+    });
   }
 
   try {
@@ -207,15 +217,13 @@ export async function changePassword(
   newPassword: string,
 ): Promise<UserDocument> {
   const user = await User.findById(id).select('+passwordHash').exec();
-  if (!user) {
-    throw new UserError('USER_NOT_FOUND', `No user with id ${id}`);
-  }
+  if (!user) throw notFound('USER_NOT_FOUND', `No user with id ${id}`);
 
   if (user.passwordHash === undefined) {
-    throw new UserError('PASSWORD_NOT_SET', 'This account has no password yet - use setPassword');
+    throw badRequest('PASSWORD_NOT_SET', 'This account has no password yet - ask an admin to set one');
   }
   if (!(await verifyPassword(currentPassword, user.passwordHash))) {
-    throw new UserError('INVALID_CREDENTIALS', 'Current password is incorrect');
+    throw badRequest('INVALID_CREDENTIALS', 'Current password is incorrect');
   }
 
   assertStrongPassword(newPassword);
@@ -233,24 +241,24 @@ export async function setPassword(id: string, newPassword: string): Promise<User
 }
 
 /**
- * Verifies an email/password pair. Transparently upgrades the stored hash
- * when it was created with fewer bcrypt rounds than we use now.
+ * Verifies an email/password pair. Transparently upgrades the stored hash when
+ * it was created with fewer bcrypt rounds than we use now.
  */
 export async function authenticateUser(email: string, password: string): Promise<UserDocument> {
   const user = await User.findOne({ email: email.toLowerCase().trim() })
     .select('+passwordHash')
     .exec();
 
-  // A passwordless account cannot authenticate. Same error as a bad password,
-  // so this does not reveal which accounts exist but have no password set.
+  // Same error for an unknown email, a wrong password and an account with no
+  // password set: none of them reveal which accounts exist.
   if (!user || user.passwordHash === undefined) {
-    throw new UserError('INVALID_CREDENTIALS', 'Email or password is incorrect');
+    throw unauthorized('Email or password is incorrect');
   }
   if (!(await verifyPassword(password, user.passwordHash))) {
-    throw new UserError('INVALID_CREDENTIALS', 'Email or password is incorrect');
+    throw unauthorized('Email or password is incorrect');
   }
   if (!user.isActive) {
-    throw new UserError('USER_INACTIVE', 'This account is deactivated');
+    throw new AppError(403, 'USER_INACTIVE', 'This account is deactivated');
   }
 
   if (needsRehash(user.passwordHash)) {
@@ -267,18 +275,8 @@ export async function setUserActive(id: string, isActive: boolean): Promise<User
   return user.save();
 }
 
-export async function deleteUser(id: string): Promise<void> {
-  const { deletedCount } = await User.deleteOne({ _id: id }).exec();
-  if (deletedCount === 0) {
-    throw new UserError('USER_NOT_FOUND', `No user with id ${id}`);
-  }
-}
-
-/**
- * Two unique indexes exist now (email, memberId), so the offending field has
- * to be read off keyPattern instead of assuming it was always the email.
- */
-function translateDuplicateKey(error: unknown, email: string): UserError | null {
+/** Two unique indexes exist (email, and one per profile), so read which one broke. */
+function translateDuplicateKey(error: unknown, email: string): AppError | null {
   if (
     typeof error !== 'object' ||
     error === null ||
@@ -288,9 +286,8 @@ function translateDuplicateKey(error: unknown, email: string): UserError | null 
   }
 
   const keyPattern = (error as { keyPattern?: Record<string, unknown> }).keyPattern ?? {};
-
-  if ('memberId' in keyPattern) {
-    return new UserError('MEMBER_ALREADY_LINKED', 'That member already has a login');
+  if ('memberId' in keyPattern || 'instructorId' in keyPattern) {
+    return conflict('PROFILE_ALREADY_LINKED', 'That profile already has a login');
   }
-  return new UserError('EMAIL_IN_USE', `Email ${email} is already registered`);
+  return conflict('EMAIL_IN_USE', `Email ${email} is already registered`);
 }

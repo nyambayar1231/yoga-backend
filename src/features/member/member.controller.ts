@@ -1,161 +1,169 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import type { AppEnv } from '../../lib/auth.ts';
-import { requireAuth, requireRole } from '../../middleware/auth.ts';
-import type { MemberDocument } from '../../models/member.ts';
-import { UserError } from '../user/user.service.ts';
-import { countMembers, createMember, listMembers } from './member.service.ts';
+import {
+  booleanQuery,
+  dateInput,
+  idParam,
+  objectId,
+  optionalText,
+  page,
+  pagination,
+  validate,
+} from '../../lib/http.ts';
+import { requireAuth } from '../../middleware/auth.ts';
+import {
+  assertMemberAccess,
+  requireRole,
+  requireStaff,
+} from '../../middleware/authorization.ts';
+import { GENDERS } from '../../models/member.ts';
+import { ATTENDANCE_STATUSES } from '../../models/attendance.ts';
+import {
+  countMemberAttendance,
+  listMemberAttendance,
+} from '../attendance/attendance.service.ts';
+import { assessmentBody } from '../assessment/assessment.schema.ts';
+import {
+  countAssessments,
+  createAssessmentFor,
+  listAssessments,
+} from '../assessment/assessment.service.ts';
+import {
+  countMembers,
+  createMember,
+  listMembers,
+  requireMemberById,
+  setMemberActive,
+  updateMember,
+} from './member.service.ts';
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
-const NAME_MAX = 100;
+const profileFields = {
+  firstName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(100),
+  dateOfBirth: dateInput.optional(),
+  gender: z.enum(GENDERS).optional(),
+  phone: z.string().trim().max(30).optional(),
+  email: z.email().trim().toLowerCase().optional(),
+  emergencyContact: z
+    .object({
+      name: z.string().trim().min(1).max(100),
+      phone: z.string().trim().min(1).max(30),
+    })
+    .optional(),
+  joinedAt: dateInput.optional(),
+};
 
-/** Deliberately loose: the real check is whether mail to it bounces. */
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const createBody = z.object({
+  ...profileFields,
+  /** The login email. Also used as the profile email when none is given. */
+  accountEmail: z.email().trim().toLowerCase(),
+  password: z.string().nullish(),
+});
 
-function toPublicMember(member: MemberDocument) {
-  return {
-    id: member.id,
-    firstName: member.firstName,
-    lastName: member.lastName,
-    fullName: member.fullName,
-    initials: member.initials,
-    createdAt: member.createdAt,
-    updatedAt: member.updatedAt,
-  };
-}
+const updateBody = z.object({ ...profileFields, isActive: z.boolean() }).partial();
 
-function parseIntParam(value: string | undefined, fallback: number): number | null {
-  if (value === undefined) return fallback;
-  if (!/^\d+$/.test(value)) return null;
-  return Number(value);
-}
+const listQuery = pagination.extend({ search: optionalText, isActive: booleanQuery });
 
-interface CreateMemberBody {
-  firstName: string;
-  lastName: string;
-  email: string;
-  password?: string | null;
-}
+const attendanceQuery = pagination.extend({ status: z.enum(ATTENDANCE_STATUSES).optional() });
 
-type ParsedBody = { ok: true; value: CreateMemberBody } | { ok: false; error: string };
-
-function parseCreateMemberBody(raw: unknown): ParsedBody {
-  if (typeof raw !== 'object' || raw === null) {
-    return { ok: false, error: 'Body must be a JSON object' };
-  }
-
-  const { firstName, lastName, email, password } = raw as Record<string, unknown>;
-
-  for (const [field, value] of [
-    ['firstName', firstName],
-    ['lastName', lastName],
-  ] as const) {
-    if (typeof value !== 'string' || value.trim() === '') {
-      return { ok: false, error: `${field} is required` };
-    }
-    if (value.trim().length > NAME_MAX) {
-      return { ok: false, error: `${field} must be at most ${NAME_MAX} characters` };
-    }
-  }
-
-  if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
-    return { ok: false, error: 'A valid email is required' };
-  }
-  // Explicit null is allowed and means "no password yet".
-  if (password !== undefined && password !== null && typeof password !== 'string') {
-    return { ok: false, error: 'password must be a string or null' };
-  }
-  if (typeof password === 'string' && password === '') {
-    return { ok: false, error: 'password must not be empty - use null for no password' };
-  }
-
-  return {
-    ok: true,
-    value: {
-      firstName: (firstName as string).trim(),
-      lastName: (lastName as string).trim(),
-      email: email.trim(),
-      password: (password as string | null | undefined) ?? null,
-    },
-  };
-}
+const assessmentQuery = pagination.extend({
+  type: optionalText,
+  from: dateInput.optional(),
+  to: dateInput.optional(),
+});
 
 export const memberController = new Hono<AppEnv>();
 
-// Members are registered by an admin, so the whole resource is admin-only.
-memberController.use('*', requireAuth, requireRole('admin'));
+memberController.use('*', requireAuth);
 
-/**
- * POST /api/members
- * Body: { firstName, lastName, email, password? }
- * Creates the member and its 'member' account in one call. password may be
- * null, which creates an account that cannot log in until a password is set.
- */
-memberController.post('/', async (c) => {
-  let raw: unknown;
-  try {
-    raw = await c.req.json();
-  } catch {
-    return c.json({ error: 'Body must be valid JSON' }, 400);
-  }
-
-  const parsed = parseCreateMemberBody(raw);
-  if (!parsed.ok) {
-    return c.json({ error: parsed.error }, 400);
-  }
-
-  try {
-    const { member, user } = await createMember(parsed.value);
-    c.header('Location', `/api/members/${member.id}`);
-
-    return c.json(
-      {
-        member: toPublicMember(member),
-        user: {
-          id: user.id,
-          email: user.email,
-          role: user.role,
-          isActive: user.isActive,
-          memberId: user.memberId?.toString() ?? null,
-          hasPassword: user.passwordHash !== undefined,
-        },
-      },
-      201,
-    );
-  } catch (error) {
-    if (error instanceof UserError) {
-      if (error.code === 'EMAIL_IN_USE') {
-        return c.json({ error: error.message }, 409);
-      }
-      if (error.code === 'WEAK_PASSWORD') {
-        return c.json({ error: error.message, details: error.details }, 400);
-      }
-    }
-    throw error;
-  }
-});
-
-/**
- * GET /api/members
- * Optional query: ?search=oyu&limit=50&skip=0
- * Use this to find the id to pass as `memberId` when creating a member login.
- */
-memberController.get('/', async (c) => {
-  const { search, limit: rawLimit, skip: rawSkip } = c.req.query();
-
-  const limit = parseIntParam(rawLimit, DEFAULT_LIMIT);
-  const skip = parseIntParam(rawSkip, 0);
-  if (limit === null || skip === null) {
-    return c.json({ error: 'limit and skip must be non-negative integers' }, 400);
-  }
-
-  const capped = Math.min(limit, MAX_LIMIT);
-  const options = { ...(search !== undefined ? { search } : {}), limit: capped, skip };
+memberController.get('/', requireStaff, validate('query', listQuery), async (c) => {
+  const { limit, skip, ...filter } = c.req.valid('query');
 
   const [members, total] = await Promise.all([
-    listMembers(options),
-    countMembers(search !== undefined ? { search } : {}),
+    listMembers(filter, { limit, skip }),
+    countMembers(filter),
   ]);
 
-  return c.json({ members: members.map(toPublicMember), total, limit: capped, skip });
+  return c.json(page(members, total, { limit, skip }));
 });
+
+/** Creates the profile and its member login in one call. */
+memberController.post('/', requireRole('admin'), validate('json', createBody), async (c) => {
+  const { profile, user } = await createMember(c.req.valid('json'));
+  c.header('Location', `/api/members/${profile.id}`);
+  return c.json({ member: profile, user }, 201);
+});
+
+memberController.get('/:id', validate('param', idParam), async (c) => {
+  const { id } = c.req.valid('param');
+  assertMemberAccess(c.get('user'), id);
+  return c.json(await requireMemberById(id));
+});
+
+memberController.patch(
+  '/:id',
+  requireRole('admin'),
+  validate('param', idParam),
+  validate('json', updateBody),
+  async (c) => c.json(await updateMember(c.req.valid('param').id, c.req.valid('json'))),
+);
+
+/** Deactivation, not deletion: attendance and assessments stay valid. */
+memberController.delete('/:id', requireRole('admin'), validate('param', idParam), async (c) =>
+  c.json(await setMemberActive(c.req.valid('param').id, false)),
+);
+
+memberController.get(
+  '/:id/attendance',
+  validate('param', idParam),
+  validate('query', attendanceQuery),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    assertMemberAccess(c.get('user'), id);
+
+    const { limit, skip, ...filter } = c.req.valid('query');
+    const [records, total] = await Promise.all([
+      listMemberAttendance(id, filter, { limit, skip }),
+      countMemberAttendance(id, filter),
+    ]);
+
+    return c.json(page(records, total, { limit, skip }));
+  },
+);
+
+memberController.get(
+  '/:id/assessments',
+  validate('param', idParam),
+  validate('query', assessmentQuery),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    assertMemberAccess(c.get('user'), id);
+
+    const { limit, skip, ...filter } = c.req.valid('query');
+    const query = { ...filter, memberId: id };
+
+    const [assessments, total] = await Promise.all([
+      listAssessments(query, { limit, skip }),
+      countAssessments(query),
+    ]);
+
+    return c.json(page(assessments, total, { limit, skip }));
+  },
+);
+
+memberController.post(
+  '/:id/assessments',
+  requireStaff,
+  validate('param', idParam),
+  validate('json', assessmentBody),
+  async (c) => {
+    const assessment = await createAssessmentFor(c.get('user'), {
+      ...c.req.valid('json'),
+      memberId: c.req.valid('param').id,
+    });
+
+    c.header('Location', `/api/assessments/${assessment.id}`);
+    return c.json(assessment, 201);
+  },
+);
