@@ -1,3 +1,5 @@
+import { isValidObjectId } from 'mongoose';
+import { Member } from '../../models/member.ts';
 import { User, type IUser, type UserDocument, type UserRole } from '../../models/user.ts';
 import {
   checkPasswordStrength,
@@ -11,7 +13,11 @@ export type UserErrorCode =
   | 'WEAK_PASSWORD'
   | 'USER_NOT_FOUND'
   | 'INVALID_CREDENTIALS'
-  | 'USER_INACTIVE';
+  | 'USER_INACTIVE'
+  | 'MEMBER_ID_REQUIRED'
+  | 'MEMBER_ID_NOT_ALLOWED'
+  | 'MEMBER_NOT_FOUND'
+  | 'MEMBER_ALREADY_LINKED';
 
 export class UserError extends Error {
   readonly code: UserErrorCode;
@@ -30,6 +36,8 @@ export interface CreateUserInput {
   password: string;
   role?: UserRole;
   isActive?: boolean;
+  /** Required when role is 'member': the already-registered member to link. */
+  memberId?: string;
 }
 
 export interface ListUsersOptions {
@@ -41,6 +49,35 @@ export interface ListUsersOptions {
 
 const DUPLICATE_KEY = 11000;
 
+/**
+ * A member login always points at a member record the admin registered first;
+ * every other role must not carry a memberId at all.
+ */
+async function assertMemberLink(role: UserRole, memberId: string | undefined): Promise<void> {
+  if (role !== 'member') {
+    if (memberId !== undefined) {
+      throw new UserError(
+        'MEMBER_ID_NOT_ALLOWED',
+        `memberId is only valid for role 'member', not '${role}'`,
+      );
+    }
+    return;
+  }
+
+  if (memberId === undefined) {
+    throw new UserError(
+      'MEMBER_ID_REQUIRED',
+      "role 'member' requires a memberId - register the member first",
+    );
+  }
+  if (!isValidObjectId(memberId)) {
+    throw new UserError('MEMBER_NOT_FOUND', `memberId ${memberId} is not a valid id`);
+  }
+  if (!(await Member.exists({ _id: memberId }))) {
+    throw new UserError('MEMBER_NOT_FOUND', `No member registered with id ${memberId}`);
+  }
+}
+
 function assertStrongPassword(password: string): void {
   const { valid, errors } = checkPasswordStrength(password);
   if (!valid) {
@@ -51,6 +88,9 @@ function assertStrongPassword(password: string): void {
 export async function createUser(input: CreateUserInput): Promise<UserDocument> {
   assertStrongPassword(input.password);
 
+  // 'instructor' mirrors the schema default, which applies when role is omitted.
+  await assertMemberLink(input.role ?? 'instructor', input.memberId);
+
   const passwordHash = await hashPassword(input.password);
 
   try {
@@ -60,12 +100,10 @@ export async function createUser(input: CreateUserInput): Promise<UserDocument> 
       // role / isActive fall back to the schema defaults when omitted
       ...(input.role !== undefined ? { role: input.role } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+      ...(input.memberId !== undefined ? { memberId: input.memberId } : {}),
     });
   } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      throw new UserError('EMAIL_IN_USE', `Email ${input.email} is already registered`);
-    }
-    throw error;
+    throw translateDuplicateKey(error, input.email) ?? error;
   }
 }
 
@@ -103,19 +141,36 @@ export function countUsers(options: Pick<ListUsersOptions, 'role' | 'isActive'> 
   return User.countDocuments(filter).exec();
 }
 
-export type UpdateUserInput = Partial<Pick<IUser, 'email' | 'role' | 'isActive'>>;
+export type UpdateUserInput = Partial<Pick<IUser, 'email' | 'role' | 'isActive'>> & {
+  memberId?: string;
+};
 
 export async function updateUser(id: string, input: UpdateUserInput): Promise<UserDocument> {
   const user = await requireUserById(id);
+
+  const nextRole = input.role ?? user.role;
+
+  if (input.role !== undefined || input.memberId !== undefined) {
+    // Staying a member keeps the existing link when none is supplied. Moving off
+    // the role ignores it, since it is about to be cleared anyway - only an
+    // explicitly passed memberId is an error there.
+    const effectiveMemberId =
+      nextRole === 'member' ? input.memberId ?? user.memberId?.toString() : input.memberId;
+
+    await assertMemberLink(nextRole, effectiveMemberId);
+  }
+
   user.set(input);
+
+  // Moving off the member role drops a link that no longer means anything.
+  if (nextRole !== 'member') {
+    user.set('memberId', undefined);
+  }
 
   try {
     return await user.save();
   } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      throw new UserError('EMAIL_IN_USE', `Email ${input.email} is already registered`);
-    }
-    throw error;
+    throw translateDuplicateKey(error, input.email ?? user.email) ?? error;
   }
 }
 
@@ -185,10 +240,23 @@ export async function deleteUser(id: string): Promise<void> {
   }
 }
 
-function isDuplicateKeyError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: number }).code === DUPLICATE_KEY
-  );
+/**
+ * Two unique indexes exist now (email, memberId), so the offending field has
+ * to be read off keyPattern instead of assuming it was always the email.
+ */
+function translateDuplicateKey(error: unknown, email: string): UserError | null {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    (error as { code?: number }).code !== DUPLICATE_KEY
+  ) {
+    return null;
+  }
+
+  const keyPattern = (error as { keyPattern?: Record<string, unknown> }).keyPattern ?? {};
+
+  if ('memberId' in keyPattern) {
+    return new UserError('MEMBER_ALREADY_LINKED', 'That member already has a login');
+  }
+  return new UserError('EMAIL_IN_USE', `Email ${email} is already registered`);
 }

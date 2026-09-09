@@ -17,6 +17,7 @@ function toPublicUser(user: UserDocument) {
     email: user.email,
     role: user.role,
     isActive: user.isActive,
+    memberId: user.memberId?.toString() ?? null,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -77,6 +78,7 @@ interface CreateUserBody {
   password: string;
   role?: UserRole;
   isActive?: boolean;
+  memberId?: string;
 }
 
 type ParsedBody = { ok: true; value: CreateUserBody } | { ok: false; error: string };
@@ -86,7 +88,7 @@ function parseCreateUserBody(raw: unknown): ParsedBody {
     return { ok: false, error: 'Body must be a JSON object' };
   }
 
-  const { email, password, role, isActive } = raw as Record<string, unknown>;
+  const { email, password, role, isActive, memberId } = raw as Record<string, unknown>;
 
   if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
     return { ok: false, error: 'A valid email is required' };
@@ -100,6 +102,9 @@ function parseCreateUserBody(raw: unknown): ParsedBody {
   if (isActive !== undefined && typeof isActive !== 'boolean') {
     return { ok: false, error: 'isActive must be a boolean' };
   }
+  if (memberId !== undefined && typeof memberId !== 'string') {
+    return { ok: false, error: 'memberId must be a string' };
+  }
 
   return {
     ok: true,
@@ -108,6 +113,7 @@ function parseCreateUserBody(raw: unknown): ParsedBody {
       password,
       ...(role !== undefined ? { role: role as UserRole } : {}),
       ...(isActive !== undefined ? { isActive } : {}),
+      ...(memberId !== undefined ? { memberId } : {}),
     },
   };
 }
@@ -136,10 +142,15 @@ userController.post('/', requireRole('admin'), async (c) => {
     return c.json({ user: toPublicUser(user) }, 201);
   } catch (error) {
     if (error instanceof UserError) {
-      if (error.code === 'EMAIL_IN_USE') {
+      if (error.code === 'EMAIL_IN_USE' || error.code === 'MEMBER_ALREADY_LINKED') {
         return c.json({ error: error.message }, 409);
       }
-      if (error.code === 'WEAK_PASSWORD') {
+      if (
+        error.code === 'WEAK_PASSWORD' ||
+        error.code === 'MEMBER_ID_REQUIRED' ||
+        error.code === 'MEMBER_ID_NOT_ALLOWED' ||
+        error.code === 'MEMBER_NOT_FOUND'
+      ) {
         return c.json({ error: error.message, details: error.details }, 400);
       }
     }
