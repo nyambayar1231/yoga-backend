@@ -6,7 +6,8 @@ export type UserRole = (typeof USER_ROLES)[number];
 /** Raw shape of a user document. */
 export interface IUser {
   email: string;
-  passwordHash: string;
+  /** Absent until the member sets a password: accounts can be created without one. */
+  passwordHash?: string;
   role: UserRole;
   isActive: boolean;
   /** Set only when role is 'member'. The member record is registered first. */
@@ -37,7 +38,7 @@ const userSchema = new Schema<IUser, IUserModel, IUserMethods, {}, IUserVirtuals
       lowercase: true,
       trim: true,
     },
-    passwordHash: { type: String, required: true, select: false },
+    passwordHash: { type: String, select: false },
     role: { type: String, enum: USER_ROLES, default: "instructor" },
     isActive: { type: Boolean, default: true },
     memberId: {

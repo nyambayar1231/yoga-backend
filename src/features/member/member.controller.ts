@@ -2,11 +2,15 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../../lib/auth.ts';
 import { requireAuth, requireRole } from '../../middleware/auth.ts';
 import type { MemberDocument } from '../../models/member.ts';
+import { UserError } from '../user/user.service.ts';
 import { countMembers, createMember, listMembers } from './member.service.ts';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const NAME_MAX = 100;
+
+/** Deliberately loose: the real check is whether mail to it bounces. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function toPublicMember(member: MemberDocument) {
   return {
@@ -29,6 +33,8 @@ function parseIntParam(value: string | undefined, fallback: number): number | nu
 interface CreateMemberBody {
   firstName: string;
   lastName: string;
+  email: string;
+  password?: string | null;
 }
 
 type ParsedBody = { ok: true; value: CreateMemberBody } | { ok: false; error: string };
@@ -38,7 +44,7 @@ function parseCreateMemberBody(raw: unknown): ParsedBody {
     return { ok: false, error: 'Body must be a JSON object' };
   }
 
-  const { firstName, lastName } = raw as Record<string, unknown>;
+  const { firstName, lastName, email, password } = raw as Record<string, unknown>;
 
   for (const [field, value] of [
     ['firstName', firstName],
@@ -52,11 +58,24 @@ function parseCreateMemberBody(raw: unknown): ParsedBody {
     }
   }
 
+  if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
+    return { ok: false, error: 'A valid email is required' };
+  }
+  // Explicit null is allowed and means "no password yet".
+  if (password !== undefined && password !== null && typeof password !== 'string') {
+    return { ok: false, error: 'password must be a string or null' };
+  }
+  if (typeof password === 'string' && password === '') {
+    return { ok: false, error: 'password must not be empty - use null for no password' };
+  }
+
   return {
     ok: true,
     value: {
       firstName: (firstName as string).trim(),
       lastName: (lastName as string).trim(),
+      email: email.trim(),
+      password: (password as string | null | undefined) ?? null,
     },
   };
 }
@@ -68,7 +87,9 @@ memberController.use('*', requireAuth, requireRole('admin'));
 
 /**
  * POST /api/members
- * Body: { firstName, lastName }
+ * Body: { firstName, lastName, email, password? }
+ * Creates the member and its 'member' account in one call. password may be
+ * null, which creates an account that cannot log in until a password is set.
  */
 memberController.post('/', async (c) => {
   let raw: unknown;
@@ -83,9 +104,35 @@ memberController.post('/', async (c) => {
     return c.json({ error: parsed.error }, 400);
   }
 
-  const member = await createMember(parsed.value);
-  c.header('Location', `/api/members/${member.id}`);
-  return c.json({ member: toPublicMember(member) }, 201);
+  try {
+    const { member, user } = await createMember(parsed.value);
+    c.header('Location', `/api/members/${member.id}`);
+
+    return c.json(
+      {
+        member: toPublicMember(member),
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          isActive: user.isActive,
+          memberId: user.memberId?.toString() ?? null,
+          hasPassword: user.passwordHash !== undefined,
+        },
+      },
+      201,
+    );
+  } catch (error) {
+    if (error instanceof UserError) {
+      if (error.code === 'EMAIL_IN_USE') {
+        return c.json({ error: error.message }, 409);
+      }
+      if (error.code === 'WEAK_PASSWORD') {
+        return c.json({ error: error.message, details: error.details }, 400);
+      }
+    }
+    throw error;
+  }
 });
 
 /**

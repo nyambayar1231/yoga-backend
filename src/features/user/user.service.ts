@@ -17,7 +17,8 @@ export type UserErrorCode =
   | 'MEMBER_ID_REQUIRED'
   | 'MEMBER_ID_NOT_ALLOWED'
   | 'MEMBER_NOT_FOUND'
-  | 'MEMBER_ALREADY_LINKED';
+  | 'MEMBER_ALREADY_LINKED'
+  | 'PASSWORD_NOT_SET';
 
 export class UserError extends Error {
   readonly code: UserErrorCode;
@@ -33,7 +34,8 @@ export class UserError extends Error {
 
 export interface CreateUserInput {
   email: string;
-  password: string;
+  /** Null or omitted creates an account that cannot log in until a password is set. */
+  password?: string | null;
   role?: UserRole;
   isActive?: boolean;
   /** Required when role is 'member': the already-registered member to link. */
@@ -85,18 +87,42 @@ function assertStrongPassword(password: string): void {
   }
 }
 
+/**
+ * Pre-flight for callers that must create another document first: checks the
+ * password and whether the email is free, so they can bail out before there is
+ * anything to roll back. The member link is deliberately not checked here -
+ * the member usually does not exist yet - `createUser` still validates it.
+ */
+export async function assertUserCreatable(input: {
+  email: string;
+  password?: string | null;
+}): Promise<void> {
+  if (input.password !== undefined && input.password !== null) {
+    assertStrongPassword(input.password);
+  }
+
+  if (await User.exists({ email: input.email.toLowerCase().trim() })) {
+    throw new UserError('EMAIL_IN_USE', `Email ${input.email} is already registered`);
+  }
+}
+
 export async function createUser(input: CreateUserInput): Promise<UserDocument> {
-  assertStrongPassword(input.password);
+  if (input.password !== undefined && input.password !== null) {
+    assertStrongPassword(input.password);
+  }
 
   // 'instructor' mirrors the schema default, which applies when role is omitted.
   await assertMemberLink(input.role ?? 'instructor', input.memberId);
 
-  const passwordHash = await hashPassword(input.password);
+  const passwordHash =
+    input.password !== undefined && input.password !== null
+      ? await hashPassword(input.password)
+      : undefined;
 
   try {
     return await User.create({
       email: input.email,
-      passwordHash,
+      ...(passwordHash !== undefined ? { passwordHash } : {}),
       // role / isActive fall back to the schema defaults when omitted
       ...(input.role !== undefined ? { role: input.role } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
@@ -185,6 +211,9 @@ export async function changePassword(
     throw new UserError('USER_NOT_FOUND', `No user with id ${id}`);
   }
 
+  if (user.passwordHash === undefined) {
+    throw new UserError('PASSWORD_NOT_SET', 'This account has no password yet - use setPassword');
+  }
   if (!(await verifyPassword(currentPassword, user.passwordHash))) {
     throw new UserError('INVALID_CREDENTIALS', 'Current password is incorrect');
   }
@@ -212,7 +241,12 @@ export async function authenticateUser(email: string, password: string): Promise
     .select('+passwordHash')
     .exec();
 
-  if (!user || !(await verifyPassword(password, user.passwordHash))) {
+  // A passwordless account cannot authenticate. Same error as a bad password,
+  // so this does not reveal which accounts exist but have no password set.
+  if (!user || user.passwordHash === undefined) {
+    throw new UserError('INVALID_CREDENTIALS', 'Email or password is incorrect');
+  }
+  if (!(await verifyPassword(password, user.passwordHash))) {
     throw new UserError('INVALID_CREDENTIALS', 'Email or password is incorrect');
   }
   if (!user.isActive) {
