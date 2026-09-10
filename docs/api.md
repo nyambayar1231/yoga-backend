@@ -45,12 +45,13 @@ POST   /auth/change-password    { currentPassword, newPassword }
 
 ### Users — admin only
 ```
-GET    /users                   ?role=&isActive=
+GET    /users                   ?role=&isActive=&studentId=
 POST   /users                   { email, password?, role, studentId?, teacherId? }
 GET    /users/:id
 PATCH  /users/:id
 PUT    /users/:id/password      { password }        # admin reset
 DELETE /users/:id                                   # deactivate
+POST   /users/:id/email         { subject?, text }  # emails the account holder
 ```
 
 `role: 'student'` requires `studentId`, `role: 'teacher'` requires `teacherId`, and

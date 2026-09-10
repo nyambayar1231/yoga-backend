@@ -22,6 +22,8 @@ const email = z.email().trim().toLowerCase();
 const listQuery = pagination.extend({
   role: z.enum(USER_ROLES).optional(),
   isActive: booleanQuery,
+  /** Which account holds a given profile: the only way back from a profile to its login. */
+  studentId: objectId.optional(),
 });
 
 const createBody = z.object({

@@ -29,6 +29,7 @@ export interface CreateUserInput extends ProfileLink {
 export interface ListUsersFilter {
   role?: UserRole;
   isActive?: boolean;
+  studentId?: string;
 }
 
 /**
