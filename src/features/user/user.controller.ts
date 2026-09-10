@@ -5,6 +5,8 @@ import { booleanQuery, idParam, objectId, page, pagination, validate } from '../
 import { requireAuth } from '../../middleware/auth.ts';
 import { requireRole } from '../../middleware/authorization.ts';
 import { USER_ROLES } from '../../models/user.ts';
+import { userEmailBody } from '../messaging/messaging.schema.ts';
+import { sendUserEmail } from '../messaging/messaging.service.ts';
 import {
   countUsers,
   createUser,
@@ -89,4 +91,15 @@ userController.put(
 /** Deactivation, not deletion: the account stays attached to its history. */
 userController.delete('/:id', validate('param', idParam), async (c) =>
   c.json(await setUserActive(c.req.valid('param').id, false)),
+);
+
+/**
+ * Emails the account holder. Admin-only like the rest of this controller, and
+ * blocking: the response says whether the message actually went out.
+ */
+userController.post(
+  '/:id/email',
+  validate('param', idParam),
+  validate('json', userEmailBody),
+  async (c) => c.json(await sendUserEmail(c.req.valid('param').id, c.req.valid('json'))),
 );

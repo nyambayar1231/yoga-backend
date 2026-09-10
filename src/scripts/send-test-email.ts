@@ -8,7 +8,7 @@
  * No database involved - this only exercises src/lib/email.ts.
  */
 
-import { EmailError, isValidEmail, sendEmail } from '../lib/email.ts';
+import { EmailError, escapeHtml, isValidEmail, sendEmail } from '../lib/email.ts';
 
 const DEFAULT_TO = 'nyambayarlucky@gmail.com';
 
@@ -61,18 +61,14 @@ async function main(): Promise<void> {
   console.log('Check https://resend.com/emails for its delivery status.');
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 try {
   await main();
 } catch (error) {
   if (error instanceof EmailError) {
-    const status = error.status !== undefined ? ` (HTTP ${error.status})` : '';
+    const status = error.providerStatus !== undefined ? ` (HTTP ${error.providerStatus})` : '';
     console.error(`\nSend failed [${error.code}]${status}: ${error.message}`);
 
-    if (error.status === 403) {
+    if (error.providerStatus === 403) {
       console.error(
         'With onboarding@resend.dev you can only email the address your Resend account uses.',
       );

@@ -5,6 +5,9 @@
  * this keeps the dependency tree (and the surface we have to trust) small.
  */
 
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { AppError } from './errors.ts';
+
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
 /** Resend allows 2 requests/second by default, so a slow reply is worth waiting for. */
@@ -15,16 +18,25 @@ const RETRY_DELAY_MS = 1_000;
 
 export type EmailErrorCode = 'NOT_CONFIGURED' | 'INVALID_EMAIL' | 'SEND_FAILED';
 
-export class EmailError extends Error {
-  readonly code: EmailErrorCode;
-  /** HTTP status from Resend, when the failure came from them. */
-  readonly status?: number;
+/** What each failure means to the caller of our API, not to us. */
+const STATUS_BY_CODE = {
+  // The address we were handed is unusable, so the request was wrong.
+  INVALID_EMAIL: 400,
+  // We are misconfigured. Nothing the caller sends can fix it.
+  NOT_CONFIGURED: 500,
+  // Resend refused or could not be reached: an upstream failure, not ours.
+  SEND_FAILED: 502,
+} as const satisfies Record<EmailErrorCode, ContentfulStatusCode>;
 
-  constructor(code: EmailErrorCode, message: string, status?: number) {
-    super(message);
+/** An AppError so app.onError renders it with its code instead of a bare 500. */
+export class EmailError extends AppError {
+  /** Resend's own HTTP status, when the failure came from them. Not the status we return. */
+  readonly providerStatus: number | undefined;
+
+  constructor(code: EmailErrorCode, message: string, providerStatus?: number) {
+    super(STATUS_BY_CODE[code], code, message);
     this.name = 'EmailError';
-    this.code = code;
-    if (status !== undefined) this.status = status;
+    this.providerStatus = providerStatus;
   }
 }
 
@@ -35,6 +47,11 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function isValidEmail(address: string): boolean {
   const bare = address.trim().replace(/^.*<([^>]+)>$/, '$1');
   return EMAIL_PATTERN.test(bare.trim());
+}
+
+/** For interpolating anything caller-supplied into an html body. */
+export function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 export interface SendEmailInput {
