@@ -28,8 +28,8 @@ const createBody = z.object({
   password: z.string().nullish(),
   role: z.enum(USER_ROLES),
   isActive: z.boolean().optional(),
-  memberId: objectId.optional(),
-  instructorId: objectId.optional(),
+  studentId: objectId.optional(),
+  teacherId: objectId.optional(),
 });
 
 const updateBody = z
@@ -37,8 +37,8 @@ const updateBody = z
     email,
     role: z.enum(USER_ROLES),
     isActive: z.boolean(),
-    memberId: objectId,
-    instructorId: objectId,
+    studentId: objectId,
+    teacherId: objectId,
   })
   .partial();
 

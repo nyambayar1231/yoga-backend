@@ -1,5 +1,4 @@
 import { zValidator } from '@hono/zod-validator';
-import type { Context } from 'hono';
 import { isValidObjectId } from 'mongoose';
 import { z, type ZodType } from 'zod';
 import { badRequest } from './errors.ts';
@@ -60,22 +59,6 @@ export function parseOrThrow<T extends ZodType>(schema: T, value: unknown): z.in
     throw badRequest('VALIDATION_FAILED', 'Invalid request json', issueDetails(result.error));
   }
   return result.data;
-}
-
-/**
- * A body that may legitimately be left off entirely - a member booking their
- * own place has nothing to say. An empty body reads as `{}`; a malformed one
- * is still an error rather than being silently ignored.
- */
-export async function readOptionalJson(c: Context): Promise<unknown> {
-  const raw = await c.req.text();
-  if (raw.trim() === '') return {};
-
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw badRequest('INVALID_JSON', 'Body must be valid JSON');
-  }
 }
 
 /** `.optional()` on a query string, but an empty string counts as absent. */

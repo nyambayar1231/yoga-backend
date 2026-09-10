@@ -1,18 +1,16 @@
-# Yoga Studio CMS — Architecture
+# High School Management System — Architecture
 
 ## 1. Overview
 
-This project is a small Yoga/Pilates studio CMS.
+This project is a management system for a small high school.
 
 The system manages:
 
-- Studio users and authentication
-- Members
-- Instructors
-- Class types
-- Scheduled class sessions
-- Member attendance
-- Member assessments
+- School users and authentication
+- Students
+- Teachers
+- Classes (`1a`, `1b`, `2a` … `5b`)
+- Class enrolment — which student is in which class, in which school year
 
 The backend uses:
 
@@ -23,6 +21,13 @@ The backend uses:
 - Mongoose
 
 The application should favor **simple, maintainable architecture** over premature abstraction.
+
+### Not in the system yet
+
+Lessons/timetable, attendance and grading are deliberately out of scope for now. They are
+the obvious next collections, but classes come first: nothing else can be modelled until
+there is a class to hang it off. When they are added, they follow the same rules as
+everything below — a separate collection, referenced, never an array on the student.
 
 ---
 
@@ -38,78 +43,61 @@ The `users` collection is responsible primarily for:
 
 Business/profile information belongs in:
 
-- `members`
-- `instructors`
+- `students`
+- `teachers`
 
-Do not put the complete member or instructor profile inside `users`.
+Do not put the complete student or teacher profile inside `users`.
 
 ---
 
-## 2.2 Separate class definitions from scheduled sessions
+## 2.2 A class is a group of students, not a lesson
 
 A class such as:
 
 ```text
-Yoga 101
+3a
 ```
 
-is a reusable class definition.
-
-A scheduled occurrence such as:
-
-```text
-Yoga 101
-September 10, 2026
-10:30 AM
-Instructor: Sarah
-```
-
-is a class session.
+is a group: grade 3, section A. It is the register, not the timetable.
 
 Therefore:
 
-- `classTypes` = what the class is
-- `classSessions` = when the class happens
+- `classes` = which groups the school runs
+- `enrollments` = who is in each group
 
-Do not create separate class types for different times.
+A class does not have a date, a time, or a subject. When lessons are added later they will
+be their own collection referencing `classes`, in the same way that `enrollments` does.
 
-For example, these should NOT be separate class types:
-
-```text
-Yoga 101 Morning
-Yoga 101 Afternoon
-Yoga 101 Evening
-```
-
-Instead:
+Do not create a class per subject or per term:
 
 ```text
-classTypes
-  Yoga 101
-
-classSessions
-  Yoga 101 - 10:30
-  Yoga 101 - 12:30
-  Yoga 101 - 19:00
+3a Mathematics       <- NOT a class
+3a Autumn Term       <- NOT a class
 ```
+
+There is one `3a`. What happens inside it is modelled separately.
 
 ---
 
 ## 2.3 Model many-to-many relationships explicitly
 
-Members can attend many class sessions.
+A class holds many students.
 
-Class sessions can have many members.
+A student moves through many classes over the years — 1a, then 2a, then 3a.
 
 Therefore:
 
 ```text
-Member <-> ClassSession
+Student <-> Class
 ```
 
-is represented by the `attendance` collection.
+is represented by the `enrollments` collection.
 
-Do not store a huge array of all attended classes directly inside the member document.
+This is why a student does not simply carry a `classId`. A single field would be overwritten
+every time the student moved up a grade, and the record of where they were last year would be
+gone. A row per (student, class) keeps that history.
+
+Do not store a list of every class a student has been in directly inside the student document.
 
 ---
 
@@ -121,12 +109,12 @@ For example, avoid:
 
 ```ts
 {
-  memberId: "...",
-  attendedClasses: [
+  name: "3a",
+  studentIds: [
     "...",
     "...",
     "...",
-    // potentially thousands
+    // the whole register, growing every year
   ]
 }
 ```
@@ -141,17 +129,15 @@ The initial database consists of these collections:
 
 ```text
 users
-members
-instructors
+students
+teachers
 
-classTypes
-classSessions
-attendance
-
-assessments
+classes
+enrollments
 ```
 
-Future functionality may introduce additional collections, but new collections should only be introduced when there is a clear architectural reason.
+Future functionality may introduce additional collections, but new collections should only be
+introduced when there is a clear architectural reason.
 
 ---
 
@@ -167,31 +153,19 @@ High-level relationship:
                     ┌───────────┴───────────┐
                     │                       │
                     ▼                       ▼
-             ┌─────────────┐       ┌──────────────┐
-             │   members   │       │ instructors  │
-             └──────┬──────┘       └──────┬───────┘
-                    │                     │
-                    │                     │
-                    │              ┌──────▼───────┐
-                    │              │ classSessions│
-                    │              └──────┬───────┘
-                    │                     │
-                    └────────┐    ┌───────┘
-                             ▼    ▼
-                        ┌────────────┐
-                        │ attendance │
-                        └────────────┘
-
-
-members ────────────────┐
-                        ▼
-                  ┌─────────────┐
-instructors ──────►│ assessments │
-                  └─────────────┘
-
-
-classSessions ──────► classTypes
+             ┌─────────────┐        ┌─────────────┐
+             │  students   │        │  teachers   │
+             └──────┬──────┘        └─────────────┘
+                    │
+                    │
+                    ▼
+            ┌───────────────┐        ┌─────────────┐
+            │  enrollments  │───────►│   classes   │
+            └───────────────┘        └─────────────┘
 ```
+
+An admin appears in `users` only. They have no profile document, because nothing in the
+school is filed under an administrator.
 
 ---
 
@@ -217,11 +191,11 @@ Example document:
 
   passwordHash: string,
 
-  role: "admin" | "instructor" | "member",
+  role: "admin" | "teacher" | "student",
 
-  memberId?: ObjectId,
+  studentId?: ObjectId,
 
-  instructorId?: ObjectId,
+  teacherId?: ObjectId,
 
   isActive: boolean,
 
@@ -233,19 +207,23 @@ Example document:
 
 ## Relationships
 
-For a member user:
+For a student user:
 
 ```text
-users.memberId -> members._id
+users.studentId -> students._id
 ```
 
-For an instructor user:
+For a teacher user:
 
 ```text
-users.instructorId -> instructors._id
+users.teacherId -> teachers._id
 ```
 
-An admin does not require either reference.
+An admin has neither reference.
+
+The rule is symmetric and strict: a login points at exactly the profile its role implies, and
+at nothing else. Changing a role clears the reference the old role used. The profile itself is
+left in place — it belongs to the school, not to the login.
 
 ---
 
@@ -255,36 +233,31 @@ There are three roles:
 
 ```text
 admin
-instructor
-member
+teacher
+student
 ```
 
-### Member
+### Student
 
-Members have access to their own information and permitted member functionality.
+Students have access to their own information and permitted student functionality.
 
 Example permissions:
 
 ```text
-assessment:read-own
-attendance:read-own
 profile:read-own
+enrollment:read-own
 ```
 
-### Instructor
+### Teacher
 
-Instructors can perform instructor-level operations.
+Teachers can perform teaching-staff operations.
 
 Example permissions:
 
 ```text
-member:read
-assessment:create
-assessment:read
-assessment:update
-classSession:read
-attendance:read
-attendance:update
+student:read
+class:read
+enrollment:read
 ```
 
 ### Admin
@@ -293,35 +266,35 @@ Administrators have full administrative capabilities.
 
 Admin can:
 
-- Create instructors
-- Edit instructors
-- Deactivate instructors
-- Create members
-- Edit members
-- Deactivate members
-- Create class types
-- Edit class types
-- Create class sessions
-- Edit class sessions
-- Cancel class sessions
-- Manage attendance
-- View assessments
+- Create teachers
+- Edit teachers
+- Deactivate teachers
+- Create students
+- Edit students
+- Deactivate students
+- Create classes
+- Edit classes
+- Deactivate classes
+- Enrol students into a class
+- Remove students from a class
 
-An admin should also be capable of performing instructor-level operations.
+An admin can do everything a teacher can. An admin is **not** given a teacher profile: an
+administrator who also teaches is created as a teacher in their own right, through
+`POST /api/teachers`.
 
 ---
 
-# 6. Members
+# 6. Students
 
 Collection:
 
 ```text
-members
+students
 ```
 
 Purpose:
 
-> Store the member's business/profile information.
+> Store the student's business/profile information.
 
 Example:
 
@@ -341,12 +314,13 @@ Example:
 
   email?: string,
 
-  emergencyContact?: {
+  guardian?: {
     name: string,
-    phone: string
+    phone: string,
+    relation?: string
   },
 
-  joinedAt: Date,
+  enrolledAt: Date,     // when they joined the school
 
   isActive: boolean,
 
@@ -356,25 +330,28 @@ Example:
 }
 ```
 
-Additional member fields can be added as the studio's requirements become clearer.
+`enrolledAt` is the date the student joined the school. It is not the date they joined a
+class — that lives on the enrolment row.
 
-Do not store attendance history directly in this document.
+Additional student fields can be added as the school's requirements become clearer.
 
-Do not store assessment history directly in this document.
+Do not store the student's class directly in this document.
+
+Do not store class history directly in this document.
 
 ---
 
-# 7. Instructors
+# 7. Teachers
 
 Collection:
 
 ```text
-instructors
+teachers
 ```
 
 Purpose:
 
-> Store instructor/teacher profile information.
+> Store teacher profile information.
 
 Example:
 
@@ -390,7 +367,7 @@ Example:
 
   bio?: string,
 
-  specialties?: string[],
+  subjects?: string[],
 
   isActive: boolean,
 
@@ -400,27 +377,40 @@ Example:
 }
 ```
 
-The instructor's authentication account is stored separately in `users`.
+`subjects` is what the teacher teaches — `["mathematics", "physics"]`. It is descriptive:
+the system does not yet schedule anyone against it.
+
+The teacher's authentication account is stored separately in `users`.
 
 Relationship:
 
 ```text
-users.instructorId -> instructors._id
+users.teacherId -> teachers._id
 ```
 
 ---
 
-# 8. Class Types
+# 8. Classes
 
 Collection:
 
 ```text
-classTypes
+classes
 ```
 
 Purpose:
 
-> Define the type/category of class offered by the studio.
+> Define a class group the school runs.
+
+The school runs grades 1 to 5, each split into sections `a` and `b`:
+
+```text
+1a  1b
+2a  2b
+3a  3b
+4a  4b
+5a  5b
+```
 
 Example:
 
@@ -428,15 +418,11 @@ Example:
 {
   _id: ObjectId,
 
-  name: string,
+  grade: number,          // 1 - 5
 
-  description?: string,
+  section: "a" | "b",
 
-  category: "yoga" | "pilates" | "other",
-
-  durationMinutes: number,
-
-  capacity: number,
+  name: string,           // "3a" - derived from grade + section
 
   isActive: boolean,
 
@@ -450,108 +436,44 @@ Example:
 
 ```json
 {
-  "name": "Yoga 101",
-  "category": "yoga",
-  "durationMinutes": 60,
-  "capacity": 20
+  "grade": 3,
+  "section": "a",
+  "name": "3a"
 }
 ```
 
-This does NOT contain a specific date or time.
+`name` is derived, never supplied by the caller. It is written on every save from `grade` and
+`section`, so it cannot drift away from the two fields it comes from. It is stored rather than
+computed on read so it can be indexed, searched and sorted.
+
+This does NOT contain a date, a time, a subject or a list of students.
 
 ---
 
-# 9. Class Sessions
+# 9. Enrollments
 
 Collection:
 
 ```text
-classSessions
+enrollments
 ```
 
 Purpose:
 
-> Represent an actual scheduled occurrence of a class.
-
-Example:
-
-```ts
-{
-  _id: ObjectId,
-
-  classTypeId: ObjectId,
-
-  instructorId: ObjectId,
-
-  startAt: Date,
-
-  endAt: Date,
-
-  capacity: number,
-
-  status: "scheduled" | "cancelled" | "completed",
-
-  createdAt: Date,
-
-  updatedAt: Date
-}
-```
-
-Relationships:
-
-```text
-classSessions.classTypeId
-    ->
-classTypes._id
-```
-
-and:
-
-```text
-classSessions.instructorId
-    ->
-instructors._id
-```
-
-Example:
-
-```json
-{
-  "classTypeId": "Yoga 101",
-  "instructorId": "Sarah",
-  "startAt": "2026-09-10T10:30:00",
-  "endAt": "2026-09-10T11:30:00",
-  "capacity": 20,
-  "status": "scheduled"
-}
-```
-
----
-
-# 10. Attendance
-
-Collection:
-
-```text
-attendance
-```
-
-Purpose:
-
-> Represent the relationship between a member and a class session.
+> Represent the relationship between a student and a class.
 
 This is a many-to-many relationship:
 
 ```text
-Member
+Student
   |
   | many
   |
-Attendance
+Enrollment
   |
   | many
   |
-ClassSession
+Class
 ```
 
 Example:
@@ -560,13 +482,15 @@ Example:
 {
   _id: ObjectId,
 
-  memberId: ObjectId,
+  studentId: ObjectId,
 
-  classSessionId: ObjectId,
+  classId: ObjectId,
 
-  status: "registered" | "attended" | "cancelled" | "no_show",
+  schoolYear: string,     // "2026-2027"
 
-  checkedInAt?: Date,
+  enrolledAt: Date,
+
+  isActive: boolean,
 
   createdAt: Date,
 
@@ -577,29 +501,33 @@ Example:
 Relationships:
 
 ```text
-attendance.memberId
+enrollments.studentId
     ->
-members._id
+students._id
 ```
 
 ```text
-attendance.classSessionId
+enrollments.classId
     ->
-classSessions._id
+classes._id
 ```
+
+`schoolYear` is written as the two calendar years it spans: `2026-2027`. It is a string
+rather than a date because a school year is a label, not an instant, and the school talks
+about it that way.
 
 ---
 
-## 10.1 Attendance uniqueness
+## 9.1 Enrollment uniqueness
 
-A member should only have one attendance record for a particular class session.
+A student should only have one enrolment record for a particular class.
 
 Create a compound unique index:
 
 ```ts
 {
-  memberId: 1,
-  classSessionId: 1
+  studentId: 1,
+  classId: 1
 }
 ```
 
@@ -609,107 +537,25 @@ with:
 unique: true
 ```
 
-This prevents duplicate registrations.
+Putting a student back into a class they left revives the existing row rather than adding a
+second one. Their history stays a single row per class they have actually been in.
 
 ---
 
-# 11. Assessments
+## 9.2 One class at a time
 
-Collection:
+A student sits in one class per school year.
 
-```text
-assessments
-```
+An attempt to enrol a student who already has an **active** enrolment in a different class in
+the same school year is a conflict (409), not a second row. Move them out of the old class
+first. This is enforced in the service, because no single index can express it.
 
-Purpose:
-
-> Store an instructor's evaluation/progress assessment for a member.
-
-A member can have many assessments.
-
-An instructor can create many assessments.
-
-Example:
-
-```ts
-{
-  _id: ObjectId,
-
-  memberId: ObjectId,
-
-  instructorId: ObjectId,
-
-  assessmentDate: Date,
-
-  type: string,
-
-  data: Record<string, unknown>,
-
-  notes?: string,
-
-  createdAt: Date,
-
-  updatedAt: Date
-}
-```
-
-Relationships:
-
-```text
-assessments.memberId
-    ->
-members._id
-```
-
-```text
-assessments.instructorId
-    ->
-instructors._id
-```
+Enrolling the same student into the same class in a **later** school year updates the existing
+row — held down to one by the unique index above.
 
 ---
 
-## 11.1 Assessment data
-
-Assessment fields may evolve over time.
-
-Therefore, the assessment-specific data can be stored inside:
-
-```ts
-data: Record<string, unknown>
-```
-
-Example:
-
-```json
-{
-  "data": {
-    "flexibility": 8,
-    "balance": 7,
-    "strength": 6,
-    "mobility": 9
-  }
-}
-```
-
-This allows assessment fields to evolve without requiring a database migration for every new assessment metric.
-
-However, core searchable/filterable fields should remain top-level fields.
-
-For example:
-
-```ts
-memberId
-instructorId
-assessmentDate
-type
-```
-
-should remain top-level.
-
----
-
-# 12. MongoDB Indexes
+# 10. MongoDB Indexes
 
 Indexes should be created based on actual query patterns.
 
@@ -722,44 +568,50 @@ UserSchema.index(
   { email: 1 },
   { unique: true }
 );
+
+UserSchema.index(
+  { studentId: 1 },
+  { unique: true, sparse: true }
+);
+
+UserSchema.index(
+  { teacherId: 1 },
+  { unique: true, sparse: true }
+);
 ```
 
 Email should be normalized to lowercase before storage.
 
+The two profile indexes are sparse, so the many users with neither reference do not collide
+with each other on null.
+
 ---
 
-## Members
-
-Potential indexes:
+## Students
 
 ```ts
-MemberSchema.index({
+StudentSchema.index({
   lastName: 1,
   firstName: 1
 });
 
-MemberSchema.index({
-  email: 1
-});
-```
-
-If member email is guaranteed to be unique:
-
-```ts
-MemberSchema.index(
+StudentSchema.index(
   { email: 1 },
-  { unique: true }
+  { sparse: true }
 );
 ```
+
+The email index is not unique. Siblings share a parent's address, and refusing to register a
+real pupil is the worse failure.
 
 Do not create a unique index unless the business requirement guarantees uniqueness.
 
 ---
 
-## Instructors
+## Teachers
 
 ```ts
-InstructorSchema.index({
+TeacherSchema.index({
   lastName: 1,
   firstName: 1
 });
@@ -767,43 +619,34 @@ InstructorSchema.index({
 
 ---
 
-## Class Sessions
-
-Common queries will include:
-
-- Find sessions by date
-- Find sessions for an instructor
-- Find sessions by class type
-
-Indexes:
+## Classes
 
 ```ts
-ClassSessionSchema.index({
-  startAt: 1
-});
+ClassSchema.index(
+  { name: 1 },
+  { unique: true }
+);
 
-ClassSessionSchema.index({
-  instructorId: 1,
-  startAt: 1
-});
-
-ClassSessionSchema.index({
-  classTypeId: 1,
-  startAt: 1
-});
+ClassSchema.index(
+  { grade: 1, section: 1 },
+  { unique: true }
+);
 ```
+
+There is one `3a`. Both indexes say so; the compound one is the pair the application actually
+reasons about, and the one on `name` protects the derived field.
 
 ---
 
-## Attendance
+## Enrollments
 
 Most important index:
 
 ```ts
-AttendanceSchema.index(
+EnrollmentSchema.index(
   {
-    memberId: 1,
-    classSessionId: 1
+    studentId: 1,
+    classId: 1
   },
   {
     unique: true
@@ -811,48 +654,27 @@ AttendanceSchema.index(
 );
 ```
 
-For member attendance history:
+For the class register:
 
 ```ts
-AttendanceSchema.index({
-  memberId: 1,
-  createdAt: -1
+EnrollmentSchema.index({
+  classId: 1,
+  schoolYear: 1
 });
 ```
 
-For session attendance:
+For a student's class history:
 
 ```ts
-AttendanceSchema.index({
-  classSessionId: 1
-});
-```
-
----
-
-## Assessments
-
-For member assessment history:
-
-```ts
-AssessmentSchema.index({
-  memberId: 1,
-  assessmentDate: -1
-});
-```
-
-For instructor assessment history:
-
-```ts
-AssessmentSchema.index({
-  instructorId: 1,
-  assessmentDate: -1
+EnrollmentSchema.index({
+  studentId: 1,
+  enrolledAt: -1
 });
 ```
 
 ---
 
-# 13. Authorization Rules
+# 11. Authorization Rules
 
 Authorization must be enforced on the backend.
 
@@ -869,70 +691,69 @@ Are they allowed to perform this operation?
 
 ---
 
-## 13.1 Member access
+## 11.1 Student access
 
-A member should generally only be able to access their own data.
+A student should generally only be able to access their own data.
 
 For example:
 
 ```text
-member A
+student A
     ↓
-can read member A's assessment
+can read student A's enrolments
 ```
 
 but:
 
 ```text
-member A
+student A
     X
-cannot read member B's assessment
+cannot read student B's enrolments
 ```
 
-Never rely on the client to send the correct `memberId`.
+Never rely on the client to send the correct `studentId`.
 
-The backend should derive the member identity from the authenticated user.
-
----
-
-## 13.2 Instructor access
-
-Instructor access should be defined according to the studio's business rules.
-
-At minimum, instructors can:
-
-- View members
-- View their classes
-- Create assessments
-- View assessments they are allowed to access
-- Manage attendance for their classes
-
-If the studio later requires instructors to only see members who attend their classes, enforce that relationship in the backend.
-
-Do not assume that having the `instructor` role means unrestricted access to every member.
+The backend should derive the student identity from the authenticated user.
 
 ---
 
-## 13.3 Admin access
+## 11.2 Teacher access
+
+Teacher access should be defined according to the school's business rules.
+
+At minimum, teachers can:
+
+- View students
+- View classes
+- View class registers
+
+Teachers do not create or edit students, teachers or classes. That is administration.
+
+If the school later requires teachers to only see the students they actually teach, enforce
+that relationship in the backend. Do not assume that having the `teacher` role means
+unrestricted access to every student.
+
+---
+
+## 11.3 Admin access
 
 Admins have full management access.
 
 Admins can manage:
 
 ```text
-members
-instructors
-classTypes
-classSessions
-attendance
-assessments
+users
+students
+teachers
+classes
+enrollments
 ```
 
-An admin is also allowed to perform instructor-level operations.
+An admin is also allowed to perform teacher-level operations.
 
 ---
 
-# 14. Deletion Strategy
+# 12. Deletion Strategy
 
 Prefer **soft deletion/deactivation** for important business entities.
 
@@ -944,136 +765,124 @@ isActive: false
 
 instead of immediately deleting:
 
-- Members
-- Instructors
-- Class types
+- Students
+- Teachers
+- Classes
+- Enrollments
 
 This preserves historical information.
 
-For example, if an instructor leaves the studio, old class sessions and assessments should still retain the instructor reference.
+For example, if a teacher leaves the school, their profile should remain so that anything
+recorded against them still resolves to a person.
 
 Therefore:
 
 ```text
-Instructor
+Teacher
 isActive = false
 ```
 
 is preferable to:
 
 ```text
-DELETE instructor
+DELETE teacher
 ```
+
+Removing a student from a class is the same: the enrolment is deactivated, not deleted. It is
+the record of where that student used to be.
 
 ---
 
-# 15. Historical Data
+# 13. Historical Data
 
 Historical records should remain valid even if the related entity becomes inactive.
 
 For example:
 
 ```text
-Instructor Sarah
+Teacher Sarah
     ↓
-leaves studio
+leaves the school
     ↓
 isActive = false
 ```
 
-Her historical classes should still contain:
+Retiring a class does not touch its enrolments: who was in 3a is still true after the school
+stops running a 3a.
 
-```text
-instructorId
-```
-
-and her historical assessments should remain available.
-
-Do not automatically delete historical records when an instructor/member/class becomes inactive.
+Do not automatically delete historical records when a teacher/student/class becomes inactive.
 
 ---
 
-# 16. Date and Time
+# 14. Date and Time
 
 Store dates in MongoDB as `Date` values.
 
 Use UTC internally where possible.
 
-The frontend can display dates/times using the studio's local timezone.
+The frontend can display dates using the school's local timezone.
 
 The system should not store dates as formatted strings such as:
 
 ```text
-"September 10, 2026 10:30 AM"
+"September 10, 2026"
 ```
 
 Instead store:
 
 ```ts
-startAt: Date
+enrolledAt: Date
 ```
 
 and format it for display.
 
+The one deliberate exception is `schoolYear`, which is a label (`"2026-2027"`) rather than an
+instant. See section 9.
+
 ---
 
-# 17. Mongoose Architecture
+# 15. Mongoose Architecture
 
 Keep schemas/models separate from business logic.
 
-Recommended backend structure:
+Backend structure:
 
 ```text
 src/
-├── modules/
-│   ├── users/
-│   │   ├── user.model.ts
-│   │   ├── user.service.ts
+├── models/                     # schemas only
+│   ├── base.ts
+│   ├── user.ts
+│   ├── student.ts
+│   ├── teacher.ts
+│   ├── class.ts
+│   └── enrollment.ts
+│
+├── features/                   # one folder per resource
+│   ├── auth/
+│   │   └── auth.controller.ts
+│   ├── user/
 │   │   ├── user.controller.ts
-│   │   └── user.routes.ts
-│   │
-│   ├── members/
-│   │   ├── member.model.ts
-│   │   ├── member.service.ts
-│   │   ├── member.controller.ts
-│   │   └── member.routes.ts
-│   │
-│   ├── instructors/
-│   │   ├── instructor.model.ts
-│   │   ├── instructor.service.ts
-│   │   ├── instructor.controller.ts
-│   │   └── instructor.routes.ts
-│   │
-│   ├── class-types/
-│   │   ├── class-type.model.ts
-│   │   ├── class-type.service.ts
-│   │   ├── class-type.controller.ts
-│   │   └── class-type.routes.ts
-│   │
-│   ├── class-sessions/
-│   │   ├── class-session.model.ts
-│   │   ├── class-session.service.ts
-│   │   ├── class-session.controller.ts
-│   │   └── class-session.routes.ts
-│   │
-│   ├── attendance/
-│   │   ├── attendance.model.ts
-│   │   ├── attendance.service.ts
-│   │   ├── attendance.controller.ts
-│   │   └── attendance.routes.ts
-│   │
-│   └── assessments/
-│       ├── assessment.model.ts
-│       ├── assessment.service.ts
-│       ├── assessment.controller.ts
-│       └── assessment.routes.ts
+│   │   └── user.service.ts
+│   ├── student/
+│   │   ├── student.controller.ts
+│   │   └── student.service.ts
+│   ├── teacher/
+│   │   ├── teacher.controller.ts
+│   │   └── teacher.service.ts
+│   ├── class/
+│   │   ├── class.controller.ts
+│   │   └── class.service.ts
+│   └── enrollment/
+│       ├── enrollment.controller.ts
+│       ├── enrollment.schema.ts
+│       └── enrollment.service.ts
 │
 ├── middleware/
 │   ├── auth.ts
 │   └── authorization.ts
 │
-├── config/
-├── database/
+├── lib/                        # db, errors, http helpers, auth, password
+├── seed/
 └── app.ts
 ```
 
@@ -1081,7 +890,7 @@ The exact framework structure can differ, but the separation of responsibilities
 
 ---
 
-# 18. Service Responsibilities
+# 16. Service Responsibilities
 
 Models should define the database structure.
 
@@ -1090,18 +899,16 @@ Services should contain business logic.
 For example:
 
 ```ts
-attendance.service.ts
+enrollment.service.ts
 ```
 
 should contain logic such as:
 
 ```text
-Register member for class
-Cancel registration
-Check member into class
-Mark no-show
-Check class capacity
-Prevent duplicate registration
+Enrol a student into a class
+Remove a student from a class
+Prevent two active classes in the same school year
+Revive a previous enrolment instead of duplicating it
 ```
 
 The controller should primarily handle:
@@ -1120,7 +927,7 @@ Do not put complex business logic directly inside controllers.
 
 ---
 
-# 19. Important Business Rules
+# 17. Important Business Rules
 
 These rules should be enforced by the backend.
 
@@ -1130,321 +937,237 @@ These rules should be enforced by the backend.
 - Passwords must never be stored in plaintext.
 - Inactive users cannot authenticate.
 - Role must be one of the defined roles.
+- A login points at the profile its role implies, and at most one login per profile.
+- An admin holds no profile reference.
 
-### Members
+### Students
 
-- A member can attend many class sessions.
-- A member can have many assessments.
-- Deactivating a member should not delete historical attendance or assessments.
+- A student can be enrolled in many classes over time.
+- A student is in at most one class per school year.
+- Deactivating a student should not delete their enrolment history.
 
-### Instructors
+### Teachers
 
-- An instructor can teach many class sessions.
-- Deactivating an instructor should not delete historical classes or assessments.
+- Deactivating a teacher should not delete anything recorded against them.
 
-### Class Types
+### Classes
 
-- A class type represents a reusable class definition.
-- Multiple sessions can reference the same class type.
+- A class is identified by its grade and section; `1a` exists once.
+- `name` is derived from grade and section and is never supplied by the caller.
+- Deactivating a class should not delete its enrolments.
 
-### Class Sessions
+### Enrollments
 
-- A session references exactly one class type.
-- A session references one instructor initially.
-- A session has a start and end time.
-- Cancelled sessions should remain in the database.
-
-### Attendance
-
-- A member cannot have duplicate attendance records for the same session.
-- Capacity rules should be enforced by the backend.
-- Attendance history should not be embedded inside members.
-
-### Assessments
-
-- Every assessment belongs to one member.
-- Every assessment records the instructor who created it.
-- Assessment history should not be embedded inside members.
-- Historical assessments should remain available.
+- A student cannot have duplicate enrolment records for the same class.
+- Enrolment history should not be embedded inside students.
 
 ---
 
-# 20. Transactions
+# 18. Transactions
 
 MongoDB transactions should be used when multiple writes must succeed or fail together.
 
-For example, creating a member and their login account may require:
+For example, creating a student and their login account requires:
 
 ```text
-Create Member
+Create Student
     +
 Create User
 ```
 
 If one operation fails, the other should not remain as an orphan record.
 
-Use a MongoDB session/transaction for operations where atomicity is important.
-
-However, do not use transactions unnecessarily for every database operation.
+The current implementation does not use a transaction for this, because a standalone `mongod`
+does not support them and the project has to run in local development too. Instead everything
+that can be checked is checked up front, and a failed account write deletes the profile again.
+A profile is never left behind without its login. Use a session/transaction where atomicity
+matters and the deployment supports it — but do not use transactions for every operation.
 
 ---
 
-# 21. Population vs Aggregation
+# 19. Population vs Aggregation
 
 Mongoose `populate()` can be used for straightforward relationships.
 
 For example:
 
 ```ts
-ClassSession.find()
-  .populate("classTypeId")
-  .populate("instructorId");
+Enrollment.find({ classId })
+  .populate("studentId", "firstName lastName email isActive");
 ```
+
+Populate the side the caller actually needs, and only the fields they need:
+
+- A class register resolves the **student**.
+- A student's history resolves the **class**.
 
 For complex reporting or dashboard queries, prefer MongoDB aggregation pipelines.
 
 Do not blindly populate every relationship.
 
-Only retrieve the data required by the API request.
-
 ---
 
-# 22. API Design
+# 20. API Design
 
 The API should expose resources based on business concepts.
-
-Example:
 
 ```text
 /api/auth
 
 /api/users
 
-/api/members
+/api/students
 
-/api/instructors
+/api/teachers
 
-/api/class-types
+/api/classes
 
-/api/class-sessions
-
-/api/attendance
-
-/api/assessments
+/api/enrollments
 ```
 
 Example operations:
 
 ```text
-GET    /members
-GET    /members/:id
-POST   /members
-PATCH  /members/:id
-DELETE /members/:id
+GET    /students
+GET    /students/:id
+POST   /students
+PATCH  /students/:id
+DELETE /students/:id
 ```
 
 For classes:
 
 ```text
-GET    /class-types
-POST   /class-types
-PATCH  /class-types/:id
-
-GET    /class-sessions
-POST   /class-sessions
-PATCH  /class-sessions/:id
+GET    /classes
+POST   /classes
+PATCH  /classes/:id
 ```
 
-Attendance:
+Enrolment:
 
 ```text
-POST   /class-sessions/:id/attendance
-GET    /class-sessions/:id/attendance
+POST   /classes/:id/students      enrol
+GET    /classes/:id/students      the register
 
-GET    /members/:id/attendance
+GET    /students/:id/enrollments  the student's class history
+
+GET    /enrollments
+DELETE /enrollments/:id           remove from class
 ```
 
-Assessments:
-
-```text
-POST   /members/:id/assessments
-GET    /members/:id/assessments
-GET    /assessments/:id
-PATCH  /assessments/:id
-```
-
-The exact API style may change depending on the backend framework, but resource boundaries should remain clear.
+See [api.md](./api.md) for the full surface.
 
 ---
 
-# 23. Example User Flow
+# 21. Example User Flow
 
-## Admin creates an instructor
+## Admin creates a teacher
 
 ```text
 Admin
   ↓
-Create instructor profile
+Create teacher profile
   ↓
 Create user account
   ↓
-users.instructorId → instructors._id
+users.teacherId → teachers._id
   ↓
-role = instructor
+role = teacher
 ```
 
 ---
 
-## Admin creates a member
+## Admin creates a student
 
 ```text
 Admin
   ↓
-Create member profile
+Create student profile
   ↓
 Create user account
   ↓
-users.memberId → members._id
+users.studentId → students._id
   ↓
-role = member
+role = student
 ```
 
 ---
 
-## Admin creates Yoga 101
+## Admin creates the classes
 
 ```text
-classTypes
+classes
 
-{
-  name: "Yoga 101",
-  durationMinutes: 60,
-  capacity: 20
-}
+{ grade: 1, section: "a" }   ->  1a
+{ grade: 1, section: "b" }   ->  1b
+{ grade: 2, section: "a" }   ->  2a
+...
+{ grade: 5, section: "b" }   ->  5b
 ```
 
 ---
 
-## Admin schedules three sessions
+## Admin enrols a student into 3a
 
 ```text
-classSessions
-
-Yoga 101
-10:30
-Instructor Sarah
-
-Yoga 101
-12:30
-Instructor Sarah
-
-Yoga 101
-19:00
-Instructor John
-```
-
-All three reference the same:
-
-```text
-classTypeId
-```
-
----
-
-## Member registers for a class
-
-```text
-Member
+Student
   ↓
-Yoga 101 10:30 session
+Class 3a
   ↓
-attendance
+enrollments
 ```
 
 Example:
 
 ```ts
 {
-  memberId,
-  classSessionId,
-  status: "registered"
+  studentId,
+  classId,
+  schoolYear: "2026-2027",
+  isActive: true
 }
 ```
 
 ---
 
-## Member attends
+## The student moves up a grade
 
-Update:
-
-```ts
-status: "attended"
-```
-
-and:
-
-```ts
-checkedInAt: Date
-```
-
----
-
-## Instructor creates an assessment
+The next year the student is enrolled into `4a`.
 
 ```text
-Instructor
-  ↓
-Member
-  ↓
-Create Assessment
-  ↓
-assessments
+Remove from 3a          ->  enrollments (3a).isActive = false
+Enrol into 4a           ->  new row, schoolYear "2027-2028"
 ```
 
-Example:
-
-```ts
-{
-  memberId,
-  instructorId,
-  assessmentDate,
-  type: "progress",
-  data: {
-    flexibility: 8,
-    balance: 7,
-    mobility: 9
-  },
-  notes: "Good progress."
-}
-```
+Both rows remain. The student's history reads: 3a in 2026-2027, 4a in 2027-2028.
 
 ---
 
-# 24. What NOT to Do
+# 22. What NOT to Do
 
 Avoid creating one giant document:
 
 ```ts
 {
-  member: {...},
+  student: {...},
 
   classes: [...],
 
-  attendance: [...],
-
-  assessments: [...],
-
-  instructors: [...]
+  teachers: [...]
 }
 ```
 
-Do not embed unlimited attendance history.
+Do not embed the register inside a class.
 
-Do not embed unlimited assessment history.
+Do not embed class history inside a student.
 
-Do not create separate class types for each scheduled time.
+Do not put a bare `classId` on the student — it destroys last year's record.
 
-Do not store passwords in member/instructor documents.
+Do not create a class per subject or per term.
+
+Do not store passwords in student/teacher documents.
+
+Do not give an admin a teacher profile.
 
 Do not rely exclusively on frontend authorization.
 
@@ -1456,70 +1179,53 @@ Do not over-engineer the MongoDB schema before actual requirements justify it.
 
 ---
 
-# 25. Initial Schema Summary
+# 23. Initial Schema Summary
 
 ```text
 users
 ├── email
 ├── passwordHash
-├── role
-├── memberId?
-├── instructorId?
+├── role            admin | teacher | student
+├── studentId?      only for role student
+├── teacherId?      only for role teacher
 └── isActive
 
-members
+students
 ├── firstName
 ├── lastName
 ├── dateOfBirth?
 ├── gender?
 ├── phone?
 ├── email?
-├── emergencyContact?
-├── joinedAt
+├── guardian?       { name, phone, relation? }
+├── enrolledAt      joined the school
 └── isActive
 
-instructors
+teachers
 ├── firstName
 ├── lastName
 ├── phone?
 ├── bio?
-├── specialties?
+├── subjects?
 └── isActive
 
-classTypes
-├── name
-├── description?
-├── category
-├── durationMinutes
-├── capacity
+classes
+├── grade           1 - 5
+├── section         a | b
+├── name            derived: "3a"
 └── isActive
 
-classSessions
-├── classTypeId
-├── instructorId
-├── startAt
-├── endAt
-├── capacity
-└── status
-
-attendance
-├── memberId
-├── classSessionId
-├── status
-└── checkedInAt?
-
-assessments
-├── memberId
-├── instructorId
-├── assessmentDate
-├── type
-├── data
-└── notes?
+enrollments
+├── studentId
+├── classId
+├── schoolYear      "2026-2027"
+├── enrolledAt
+└── isActive
 ```
 
 ---
 
-# 26. Source of Truth for Claude Code
+# 24. Source of Truth for Claude Code
 
 This document is the architectural source of truth for the backend.
 
@@ -1530,12 +1236,14 @@ When implementing new features:
 3. Do not duplicate data without a clear reason.
 4. Preserve historical records.
 5. Enforce authorization on the backend.
-6. Keep business logic inside services/use-cases rather than controllers.
+6. Keep business logic inside services rather than controllers.
 7. Add indexes based on actual query patterns.
 8. Prefer references for relationships that can grow indefinitely.
 9. Keep MongoDB documents reasonably bounded.
-10. Prefer simple solutions appropriate for a small studio.
+10. Prefer simple solutions appropriate for a small school.
 11. Do not introduce unnecessary infrastructure or architectural complexity.
-12. When a new requirement conflicts with this architecture, identify the conflict before changing the data model.
+12. When a new requirement conflicts with this architecture, identify the conflict before
+    changing the data model.
 
-The architecture should evolve as requirements become clearer, but changes should be deliberate and documented.
+The architecture should evolve as requirements become clearer, but changes should be
+deliberate and documented.

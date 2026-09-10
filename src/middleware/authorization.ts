@@ -1,5 +1,4 @@
 import type { MiddlewareHandler } from 'hono';
-import type { Types } from 'mongoose';
 import type { AppEnv, AuthUser } from '../lib/auth.ts';
 import { forbidden } from '../lib/errors.ts';
 import type { UserRole } from '../models/user.ts';
@@ -15,36 +14,23 @@ export function requireRole(...roles: UserRole[]): MiddlewareHandler<AppEnv> {
   };
 }
 
-/** Admins can do everything an instructor can, so the two travel together. */
-export const requireStaff = requireRole('admin', 'instructor');
+/** Admins can do everything a teacher can, so the two travel together. */
+export const requireStaff = requireRole('admin', 'teacher');
 
-/** The profile a 'member' account is attached to. */
-export function ownMemberId(user: AuthUser): string {
-  if (user.memberId === undefined) {
-    throw forbidden('This account is not linked to a member profile');
+/** The profile a 'student' account is attached to. */
+export function ownStudentId(user: AuthUser): string {
+  if (user.studentId === undefined) {
+    throw forbidden('This account is not linked to a student profile');
   }
-  return user.memberId;
+  return user.studentId;
 }
 
 /**
- * Staff may read any member; a member only ever their own record. Called with
+ * Staff may read any student; a student only ever their own record. Called with
  * the id from the URL, which is exactly the value that must not be trusted.
  */
-export function assertMemberAccess(user: AuthUser, memberId: string): void {
-  if (user.role === 'member' && ownMemberId(user) !== memberId) {
+export function assertStudentAccess(user: AuthUser, studentId: string): void {
+  if (user.role === 'student' && ownStudentId(user) !== studentId) {
     throw forbidden('You may only access your own records');
   }
-}
-
-/**
- * Admins manage every session; an instructor only the ones they teach. Keeps
- * the `instructor` role from meaning "may edit anyone's classes".
- */
-export function assertSessionManager(
-  user: AuthUser,
-  session: { instructorId: Types.ObjectId },
-): void {
-  if (user.role === 'admin') return;
-  if (user.role === 'instructor' && user.instructorId === session.instructorId.toString()) return;
-  throw forbidden('Only an admin or the instructor teaching this class may do that');
 }

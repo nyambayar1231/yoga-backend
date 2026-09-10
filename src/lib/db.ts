@@ -15,8 +15,8 @@ export async function connectDB(uri: string = getMongoUri()): Promise<typeof mon
 
 /**
  * Brings every model's indexes in line with its schema. Correctness depends on
- * some of them - attendance uniqueness, one login per profile - so they are
- * built explicitly at boot rather than left to autoIndex.
+ * some of them - one enrolment per student per class, one login per profile -
+ * so they are built explicitly at boot rather than left to autoIndex.
  */
 export async function syncIndexes(): Promise<void> {
   await Promise.all(Object.values(mongoose.models).map((model) => model.syncIndexes()));

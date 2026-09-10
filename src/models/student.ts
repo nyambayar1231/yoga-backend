@@ -4,35 +4,41 @@ import { schemaOptions } from './base.ts';
 export const GENDERS = ['male', 'female', 'other'] as const;
 export type Gender = (typeof GENDERS)[number];
 
-export interface IEmergencyContact {
+export interface IGuardian {
   name: string;
   phone: string;
+  /** 'mother', 'father', 'grandparent', ... */
+  relation?: string;
 }
 
-/** The member's profile. Attendance and assessments live in their own collections. */
-export interface IMember {
+/**
+ * The student's profile. Which class they are in is not stored here: that is a
+ * row in `enrollments`, so a student keeps a record of every class they have
+ * been through rather than only the current one.
+ */
+export interface IStudent {
   firstName: string;
   lastName: string;
   dateOfBirth?: Date;
   gender?: Gender;
   phone?: string;
   email?: string;
-  emergencyContact?: IEmergencyContact;
-  joinedAt: Date;
+  guardian?: IGuardian;
+  enrolledAt: Date;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
-interface IMemberVirtuals {
+interface IStudentVirtuals {
   fullName: string;
 }
 
-type MemberModel = Model<IMember, {}, {}, IMemberVirtuals>;
+type StudentModel = Model<IStudent, {}, {}, IStudentVirtuals>;
 
-export type MemberDocument = HydratedDocument<IMember, IMemberVirtuals>;
+export type StudentDocument = HydratedDocument<IStudent, IStudentVirtuals>;
 
-const memberSchema = new Schema<IMember, MemberModel, {}, {}, IMemberVirtuals>(
+const studentSchema = new Schema<IStudent, StudentModel, {}, {}, IStudentVirtuals>(
   {
     firstName: { type: String, required: true, trim: true, maxlength: 100 },
     lastName: { type: String, required: true, trim: true, maxlength: 100 },
@@ -40,27 +46,28 @@ const memberSchema = new Schema<IMember, MemberModel, {}, {}, IMemberVirtuals>(
     gender: { type: String, enum: GENDERS },
     phone: { type: String, trim: true, maxlength: 30 },
     email: { type: String, trim: true, lowercase: true, maxlength: 200 },
-    emergencyContact: {
-      type: new Schema<IEmergencyContact>(
+    guardian: {
+      type: new Schema<IGuardian>(
         {
           name: { type: String, required: true, trim: true, maxlength: 100 },
           phone: { type: String, required: true, trim: true, maxlength: 30 },
+          relation: { type: String, trim: true, maxlength: 60 },
         },
         { _id: false },
       ),
     },
-    joinedAt: { type: Date, default: () => new Date() },
+    enrolledAt: { type: Date, default: () => new Date() },
     isActive: { type: Boolean, default: true },
   },
   schemaOptions(),
 );
 
-memberSchema.virtual('fullName').get(function (this: IMember) {
+studentSchema.virtual('fullName').get(function (this: IStudent) {
   return `${this.firstName} ${this.lastName}`;
 });
 
-memberSchema.index({ lastName: 1, firstName: 1 });
-// Not unique: the studio does not guarantee one email per member.
-memberSchema.index({ email: 1 }, { sparse: true });
+studentSchema.index({ lastName: 1, firstName: 1 });
+// Not unique: the school does not guarantee one email per student.
+studentSchema.index({ email: 1 }, { sparse: true });
 
-export const Member = model<IMember, MemberModel>('Member', memberSchema);
+export const Student = model<IStudent, StudentModel>('Student', studentSchema);

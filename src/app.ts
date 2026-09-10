@@ -2,13 +2,11 @@ import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
 import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
-import { assessmentController } from './features/assessment/assessment.controller.ts';
-import { attendanceController } from './features/attendance/attendance.controller.ts';
 import { authController } from './features/auth/auth.controller.ts';
-import { classSessionController } from './features/class-session/class-session.controller.ts';
-import { classTypeController } from './features/class-type/class-type.controller.ts';
-import { instructorController } from './features/instructor/instructor.controller.ts';
-import { memberController } from './features/member/member.controller.ts';
+import { classController } from './features/class/class.controller.ts';
+import { enrollmentController } from './features/enrollment/enrollment.controller.ts';
+import { studentController } from './features/student/student.controller.ts';
+import { teacherController } from './features/teacher/teacher.controller.ts';
 import { userController } from './features/user/user.controller.ts';
 import type { AppEnv } from './lib/auth.ts';
 import { AppError } from './lib/errors.ts';
@@ -26,12 +24,10 @@ export function createApp(): Hono<AppEnv> {
 
   app.route('/api/auth', authController);
   app.route('/api/users', userController);
-  app.route('/api/members', memberController);
-  app.route('/api/instructors', instructorController);
-  app.route('/api/class-types', classTypeController);
-  app.route('/api/class-sessions', classSessionController);
-  app.route('/api/attendance', attendanceController);
-  app.route('/api/assessments', assessmentController);
+  app.route('/api/students', studentController);
+  app.route('/api/teachers', teacherController);
+  app.route('/api/classes', classController);
+  app.route('/api/enrollments', enrollmentController);
 
   app.notFound((c) => c.json({ code: 'NOT_FOUND', error: 'No such endpoint' }, 404));
 

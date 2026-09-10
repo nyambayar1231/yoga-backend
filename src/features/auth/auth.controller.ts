@@ -29,8 +29,8 @@ function toAuthUser(user: UserDocument): AuthUser {
     id: user.id,
     email: user.email,
     role: user.role,
-    ...(user.memberId ? { memberId: user.memberId.toString() } : {}),
-    ...(user.instructorId ? { instructorId: user.instructorId.toString() } : {}),
+    ...(user.studentId ? { studentId: user.studentId.toString() } : {}),
+    ...(user.teacherId ? { teacherId: user.teacherId.toString() } : {}),
   };
 }
 

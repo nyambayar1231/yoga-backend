@@ -7,15 +7,15 @@ import {
   verifyPassword,
 } from '../../lib/password.ts';
 import type { Pagination } from '../../lib/http.ts';
-import { Instructor } from '../../models/instructor.ts';
-import { Member } from '../../models/member.ts';
+import { Student } from '../../models/student.ts';
+import { Teacher } from '../../models/teacher.ts';
 import { User, type IUser, type UserDocument, type UserRole } from '../../models/user.ts';
 
 const DUPLICATE_KEY = 11000;
 
 export interface ProfileLink {
-  memberId?: string;
-  instructorId?: string;
+  studentId?: string;
+  teacherId?: string;
 }
 
 export interface CreateUserInput extends ProfileLink {
@@ -31,11 +31,15 @@ export interface ListUsersFilter {
   isActive?: boolean;
 }
 
-/** The profile field `createWithAccount` fills in for each role it supports. */
+/**
+ * The profile every role points at. An admin is administrative staff and holds
+ * no profile of their own: nothing in the school is filed under an admin, so
+ * there is nothing for the reference to name.
+ */
 const PROFILE_FIELD = {
-  member: 'memberId',
-  instructor: 'instructorId',
-} as const satisfies Record<'member' | 'instructor', keyof ProfileLink>;
+  student: 'studentId',
+  teacher: 'teacherId',
+} as const satisfies Record<'student' | 'teacher', keyof ProfileLink>;
 
 function assertStrongPassword(password: string): void {
   const { valid, errors } = checkPasswordStrength(password);
@@ -52,9 +56,9 @@ async function assertProfileExists(
 
   const exists =
     isValidObjectId(id) &&
-    (field === 'memberId'
-      ? await Member.exists({ _id: id })
-      : await Instructor.exists({ _id: id }));
+    (field === 'studentId'
+      ? await Student.exists({ _id: id })
+      : await Teacher.exists({ _id: id }));
 
   if (!exists) {
     throw notFound('PROFILE_NOT_FOUND', `No profile with ${field} ${id}`);
@@ -62,31 +66,25 @@ async function assertProfileExists(
 }
 
 /**
- * A login points at the profile its role implies, and never at one it has no
- * use for. The one asymmetry is deliberate: an admin may also hold an
- * instructor profile, because an admin is allowed to do instructor-level work
- * and teaching a session or authoring an assessment has to name an instructor.
+ * A login points at exactly the profile its role implies, and at nothing else.
+ * An admin holds neither reference: administration is not teaching, and an
+ * admin who also teaches gets a teacher login of their own.
  */
 async function assertProfileLink(role: UserRole, link: ProfileLink): Promise<void> {
-  if (link.memberId !== undefined && role !== 'member') {
-    throw badRequest('PROFILE_LINK_INVALID', `memberId is not valid for role '${role}'`);
-  }
-  if (link.instructorId !== undefined && role === 'member') {
-    throw badRequest('PROFILE_LINK_INVALID', "instructorId is not valid for role 'member'");
-  }
-
-  if (role === 'member' && link.memberId === undefined) {
-    throw badRequest('PROFILE_REQUIRED', "Role 'member' requires memberId - create the profile first");
-  }
-  if (role === 'instructor' && link.instructorId === undefined) {
-    throw badRequest(
-      'PROFILE_REQUIRED',
-      "Role 'instructor' requires instructorId - create the profile first",
-    );
+  for (const [profileRole, field] of Object.entries(PROFILE_FIELD)) {
+    if (link[field] !== undefined && role !== profileRole) {
+      throw badRequest('PROFILE_LINK_INVALID', `${field} is not valid for role '${role}'`);
+    }
+    if (link[field] === undefined && role === profileRole) {
+      throw badRequest(
+        'PROFILE_REQUIRED',
+        `Role '${role}' requires ${field} - create the profile first`,
+      );
+    }
   }
 
-  await assertProfileExists('memberId', link.memberId);
-  await assertProfileExists('instructorId', link.instructorId);
+  await assertProfileExists('studentId', link.studentId);
+  await assertProfileExists('teacherId', link.teacherId);
 }
 
 /**
@@ -115,8 +113,8 @@ export async function createUser(input: CreateUserInput): Promise<UserDocument> 
       role: input.role,
       ...(input.password != null ? { passwordHash: await hashPassword(input.password) } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-      ...(input.memberId !== undefined ? { memberId: input.memberId } : {}),
-      ...(input.instructorId !== undefined ? { instructorId: input.instructorId } : {}),
+      ...(input.studentId !== undefined ? { studentId: input.studentId } : {}),
+      ...(input.teacherId !== undefined ? { teacherId: input.teacherId } : {}),
     });
   } catch (error) {
     throw translateDuplicateKey(error, input.email) ?? error;
@@ -183,23 +181,23 @@ export type UpdateUserInput = Partial<Pick<IUser, 'email' | 'role' | 'isActive'>
 export async function updateUser(id: string, input: UpdateUserInput): Promise<UserDocument> {
   const user = await requireUserById(id);
   const touchesLinks =
-    input.role !== undefined || input.memberId !== undefined || input.instructorId !== undefined;
+    input.role !== undefined || input.studentId !== undefined || input.teacherId !== undefined;
 
   user.set(input);
 
-  // Drop the link the new role no longer has any use for. An admin keeps the
-  // instructor profile they teach under, so promoting an instructor - or
-  // demoting an admin who teaches - leaves their classes and assessments
-  // pointing at the same person. Only a member has no use for one.
-  if (user.role !== 'member') user.set('memberId', undefined);
-  if (user.role === 'member') user.set('instructorId', undefined);
+  // Drop every link the new role has no use for. Changing a role rewrites what
+  // the account is, so the profile of the role it used to be must not linger:
+  // promoting a teacher to admin detaches them from the teacher profile, and
+  // the profile itself stays put for whoever picks it up next.
+  if (user.role !== 'student') user.set('studentId', undefined);
+  if (user.role !== 'teacher') user.set('teacherId', undefined);
 
   // Validate what the document will actually look like, rather than trying to
   // predict it: whatever survived the clearing above is the real link.
   if (touchesLinks) {
     await assertProfileLink(user.role, {
-      memberId: user.memberId?.toString(),
-      instructorId: user.instructorId?.toString(),
+      studentId: user.studentId?.toString(),
+      teacherId: user.teacherId?.toString(),
     });
   }
 
@@ -286,7 +284,7 @@ function translateDuplicateKey(error: unknown, email: string): AppError | null {
   }
 
   const keyPattern = (error as { keyPattern?: Record<string, unknown> }).keyPattern ?? {};
-  if ('memberId' in keyPattern || 'instructorId' in keyPattern) {
+  if ('studentId' in keyPattern || 'teacherId' in keyPattern) {
     return conflict('PROFILE_ALREADY_LINKED', 'That profile already has a login');
   }
   return conflict('EMAIL_IN_USE', `Email ${email} is already registered`);

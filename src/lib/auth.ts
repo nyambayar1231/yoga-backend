@@ -3,7 +3,7 @@ import { deleteCookie, setCookie } from 'hono/cookie';
 import { sign, verify } from 'hono/jwt';
 import type { UserRole } from '../models/user.ts';
 
-export const AUTH_COOKIE = 'yoga_cms_token';
+export const AUTH_COOKIE = 'school_cms_token';
 
 /** Pinned explicitly on both sign and verify to rule out algorithm confusion. */
 const JWT_ALG = 'HS256';
@@ -14,14 +14,14 @@ export const TOKEN_TTL_SECONDS = Number(process.env.JWT_TTL_SECONDS ?? 60 * 60 *
 /**
  * The trusted identity on the request context. The profile ids travel in the
  * token so ownership checks ("is this my data?") never need a database round
- * trip, and never trust a memberId sent by the client.
+ * trip, and never trust a studentId sent by the client.
  */
 export interface AuthUser {
   id: string;
   email: string;
   role: UserRole;
-  memberId?: string;
-  instructorId?: string;
+  studentId?: string;
+  teacherId?: string;
 }
 
 /** Hono generics so `c.get('user')` is typed everywhere. */
@@ -46,8 +46,8 @@ export function issueToken(user: AuthUser): Promise<string> {
       sub: user.id,
       email: user.email,
       role: user.role,
-      ...(user.memberId !== undefined ? { memberId: user.memberId } : {}),
-      ...(user.instructorId !== undefined ? { instructorId: user.instructorId } : {}),
+      ...(user.studentId !== undefined ? { studentId: user.studentId } : {}),
+      ...(user.teacherId !== undefined ? { teacherId: user.teacherId } : {}),
       iat: now,
       exp: now + TOKEN_TTL_SECONDS,
     },
@@ -67,8 +67,8 @@ export async function readToken(token: string): Promise<AuthUser | null> {
       id: payload.sub,
       email: payload.email,
       role: payload.role as UserRole,
-      ...(typeof payload.memberId === 'string' ? { memberId: payload.memberId } : {}),
-      ...(typeof payload.instructorId === 'string' ? { instructorId: payload.instructorId } : {}),
+      ...(typeof payload.studentId === 'string' ? { studentId: payload.studentId } : {}),
+      ...(typeof payload.teacherId === 'string' ? { teacherId: payload.teacherId } : {}),
     };
   } catch {
     return null;
