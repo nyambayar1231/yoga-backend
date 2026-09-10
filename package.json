@@ -14,6 +14,8 @@
     "email:test": "node --env-file=.env src/scripts/send-test-email.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1129.0",
+    "@aws-sdk/s3-request-presigner": "^3.1129.0",
     "@hono/node-server": "^1.13.8",
     "@hono/zod-validator": "^0.9.1",
     "bcrypt": "^6.0.0",

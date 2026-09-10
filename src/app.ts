@@ -8,6 +8,7 @@ import { classController } from './features/class/class.controller.ts';
 import { enrollmentController } from './features/enrollment/enrollment.controller.ts';
 import { studentController } from './features/student/student.controller.ts';
 import { teacherController } from './features/teacher/teacher.controller.ts';
+import { uploadController } from './features/upload/upload.controller.ts';
 import { userController } from './features/user/user.controller.ts';
 import type { AppEnv } from './lib/auth.ts';
 import { AppError } from './lib/errors.ts';
@@ -43,6 +44,7 @@ export function createApp(): Hono<AppEnv> {
   app.route('/api/teachers', teacherController);
   app.route('/api/classes', classController);
   app.route('/api/enrollments', enrollmentController);
+  app.route('/api/uploads', uploadController);
 
   app.notFound((c) => c.json({ code: 'NOT_FOUND', error: 'No such endpoint' }, 404));
 
