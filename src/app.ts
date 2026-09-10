@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { csrf } from 'hono/csrf';
 import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
@@ -16,9 +17,23 @@ export function createApp(): Hono<AppEnv> {
 
   app.use('*', logger());
 
+  // Set only when the frontend lives on a different origin (no shared parent
+  // domain to fall back to same-site cookies with). Comma-separated so a
+  // staging origin can sit alongside production. Empty in dev: the Vite proxy
+  // keeps the browser on one origin there, so neither check needs to widen.
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  // Lets the cross-origin frontend's credentialed fetch() calls through.
+  app.use('*', cors({ origin: allowedOrigins, credentials: true }));
+
   // Cookie auth means the browser sends credentials automatically, so a
-  // third-party page could trigger authenticated requests. This checks Origin.
-  app.use('*', csrf());
+  // third-party page could trigger authenticated requests. This checks Origin
+  // against the request's own host by default; a configured allowlist widens
+  // that to the cross-origin frontend instead.
+  app.use('*', csrf(allowedOrigins.length > 0 ? { origin: allowedOrigins } : undefined));
 
   app.get('/health', (c) => c.json({ status: 'healthy', uptime: process.uptime() }));
 

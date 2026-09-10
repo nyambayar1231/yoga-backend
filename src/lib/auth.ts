@@ -78,7 +78,10 @@ export async function readToken(token: string): Promise<AuthUser | null> {
 export function setAuthCookie(c: Context, token: string): void {
   setCookie(c, AUTH_COOKIE, token, {
     httpOnly: true, // JS cannot read it, so XSS cannot steal it
-    sameSite: 'Lax', // not sent on cross-site POSTs
+    // 'None' is required once the frontend is on a different origin, and
+    // browsers only honour it alongside Secure — which production already
+    // forces below, so the pairing holds without a separate flag.
+    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
     secure: process.env.NODE_ENV === 'production', // HTTPS-only outside dev
     path: '/',
     maxAge: TOKEN_TTL_SECONDS,
