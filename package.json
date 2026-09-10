@@ -10,7 +10,8 @@
     "dev": "node --env-file=.env --watch src/index.ts",
     "start": "node --env-file=.env src/index.ts",
     "seed": "node --env-file=.env src/seed/seed-admin.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "email:test": "node --env-file=.env src/scripts/send-test-email.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",
